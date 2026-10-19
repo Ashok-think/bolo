@@ -13,7 +13,7 @@ export function buildProviderChain(): ProviderConfig[] {
       name: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
       apiKey: key,
-      model: Deno.env.get('GEMINI_MODEL') || 'gemini-3.8-flash',
+      model: Deno.env.get('GEMINI_MODEL') || 'gemini-3.5-flash-lite',
       supportsReasoningEffort: false,
     });
   const apiKey = Deno.env.get('AI_API_KEY'),
@@ -86,7 +86,7 @@ export async function callProviderChain<T>(
         const thinkingConfig = /^gemini-2\.5/.test(model)
           ? { thinkingBudget: /pro/.test(model) ? 128 : 0 }
           : /^gemini-[34]/.test(model)
-            ? { thinkingLevel: 'low' }
+            ? { thinkingLevel: /^(gemini-3\.5-flash-lite|gemini-3\.6-flash|gemini-3-flash-preview)$/.test(model) ? 'minimal' : 'low' }
             : undefined;
         request = {
           systemInstruction: {
