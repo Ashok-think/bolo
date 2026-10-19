@@ -40,8 +40,19 @@ export function draftTotal(draft: ConversationDraft): number {
 
 export async function getAccessToken(): Promise<string | null> {
   try {
-    const { data: sessionData } = await supabase.auth.getSession();
-    return sessionData.session?.access_token ?? null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        supabase.auth
+          .getSession()
+          .then(({ data }) => data.session?.access_token ?? null),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), 2000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   } catch {
     return null;
   }
@@ -58,7 +69,7 @@ export async function converseTurn(
   history: ConversationTurn[],
   lang: Language,
   knownCustomers: string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<ConverseResult> {
   try {
     const token = await getAccessToken();
@@ -81,12 +92,15 @@ export async function converseTurn(
             langName: LANGUAGE_NAMES[lang],
             knownCustomers,
           }),
-        }
+        },
       );
       if (response.ok) {
-        const data = (await response.json().catch(() => null)) as
-          | { draft?: ConversationDraft; reply?: string; missing?: string[]; ready?: boolean }
-          | null;
+        const data = (await response.json().catch(() => null)) as {
+          draft?: ConversationDraft;
+          reply?: string;
+          missing?: string[];
+          ready?: boolean;
+        } | null;
         if (data && typeof data.reply === 'string' && data.draft) {
           return {
             draft: { ...emptyDraft(), ...data.draft },
@@ -106,7 +120,16 @@ export async function converseTurn(
 
 // --- Rule-based fallback ---------------------------------------------------
 
-function cannedFor(lang: Language, key: 'ask-customer' | 'ask-item' | 'ask-price' | 'ask-advance' | 'ask-anything-else' | 'didnt-get'): string {
+function cannedFor(
+  lang: Language,
+  key:
+    | 'ask-customer'
+    | 'ask-item'
+    | 'ask-price'
+    | 'ask-advance'
+    | 'ask-anything-else'
+    | 'didnt-get',
+): string {
   const M: Record<string, Partial<Record<Language, string>>> = {
     'ask-customer': {
       en: 'Got it. Who is this bill for?',
@@ -143,14 +166,23 @@ function cannedFor(lang: Language, key: 'ask-customer' | 'ask-item' | 'ask-price
   return row[lang] ?? row.en ?? 'Could you say that again?';
 }
 
+export function isClosingUtterance(text: string) {
+  return /^(?:yes(?: create it)?|create it|done|that'?s all|thats all|bas|ho gaya|ayipoyindi|haan|avunu|sare|हाँ|हां|అవును|అయిపోయింది)[.!\s]*$/iu.test(
+    text.trim(),
+  );
+}
+
 export function ruleBasedTurn(
   prev: ConversationDraft,
   utterance: string,
   lang: Language,
-  knownCustomers: string[] = []
+  knownCustomers: string[] = [],
 ): ConverseResult {
   const text = utterance.toLowerCase();
-  const parsed = parseWithRules(utterance, lang, knownCustomers);
+  const closing = isClosingUtterance(utterance);
+  const parsed = closing
+    ? { customer: '', items: [], advance: 0, notes: '' }
+    : parseWithRules(utterance, lang, knownCustomers);
 
   const draft: ConversationDraft = {
     ...prev,
@@ -160,43 +192,79 @@ export function ruleBasedTurn(
     notes: [prev.notes, parsed.notes].filter(Boolean).join(' | '),
   };
 
+  const priceOnly = utterance
+    .trim()
+    .match(/^(?:price\s*)?(\d+(?:\.\d+)?)\s*(?:each|rupees|rs)?$/i);
+  if (priceOnly && prev.items.some((it) => it.unit_price === 0)) {
+    draft.items = prev.items.map((it) =>
+      it.unit_price === 0 ? { ...it, unit_price: Number(priceOnly[1]) } : it,
+    );
+  }
   const total = draftTotal(draft);
   const hasPricedItem = draft.items.some((it) => it.unit_price > 0);
 
-  const isClosing =
-    /(^|\s)(that'?s all|thats all|bas|ho gaya|ayipoyindi|yes|haan|avunu|sare|create it|done)($|[\s.,!?])/i.test(
-      text
-    ) || /అయిపోయింది/.test(text);
+  const isClosing = closing;
 
   if (isClosing && draft.customer && hasPricedItem) {
     const balance = Math.max(0, total - draft.advance);
     const readBack =
       `${draft.customer}, total ${Math.round(total)}, advance ${Math.round(draft.advance)}, ` +
       `balance ${Math.round(balance)}. ${cannedFor(lang, 'ask-anything-else')}`;
-    return { draft, reply: readBack, missing: [], ready: true, source: 'rules' };
+    return {
+      draft,
+      reply: readBack,
+      missing: [],
+      ready: true,
+      source: 'rules',
+    };
   }
 
   if (!draft.customer) {
     return {
-      draft, reply: cannedFor(lang, 'ask-customer'), missing: ['customer'], ready: false, source: 'rules',
+      draft,
+      reply: cannedFor(lang, 'ask-customer'),
+      missing: ['customer'],
+      ready: false,
+      source: 'rules',
     };
   }
   if (draft.items.length === 0) {
     return {
-      draft, reply: cannedFor(lang, 'ask-item'), missing: ['item'], ready: false, source: 'rules',
+      draft,
+      reply: cannedFor(lang, 'ask-item'),
+      missing: ['item'],
+      ready: false,
+      source: 'rules',
     };
   }
   if (!hasPricedItem) {
     return {
-      draft, reply: cannedFor(lang, 'ask-price'), missing: ['item-price'], ready: false, source: 'rules',
+      draft,
+      reply: cannedFor(lang, 'ask-price'),
+      missing: ['item-price'],
+      ready: false,
+      source: 'rules',
     };
   }
   if (isClosing) {
     return {
-      draft, reply: cannedFor(lang, 'ask-anything-else'), missing: [], ready: true, source: 'rules',
+      draft,
+      reply: cannedFor(lang, 'ask-anything-else'),
+      missing: [],
+      ready: true,
+      source: 'rules',
     };
   }
   return {
-    draft, reply: cannedFor(lang, 'ask-advance'), missing: ['advance'], ready: false, source: 'rules',
+    draft,
+    reply: cannedFor(
+      lang,
+      draft.advance === 0 && prev.items.length === 0
+        ? 'ask-advance'
+        : 'ask-anything-else',
+    ),
+    missing: [],
+    ready: true,
+    source: 'rules',
   };
 }

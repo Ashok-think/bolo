@@ -47,7 +47,10 @@ export function avatarColor(name: string): string {
   return AVATAR_COLORS[hash % AVATAR_COLORS.length];
 }
 
-export const LANGUAGE_LABELS: Record<Language, { label: string; flag: string }> = {
+export const LANGUAGE_LABELS: Record<
+  Language,
+  { label: string; flag: string }
+> = {
   en: { label: 'English', flag: '🇬🇧' },
   hi: { label: 'हिन्दी', flag: '🇮🇳' },
   te: { label: 'తెలుగు', flag: '🇮🇳' },
@@ -86,3 +89,6 @@ export const SPEECH_LOCALES: Record<Language, string> = {
   gu: 'gu-IN',
   ur: 'ur-PK',
 };
+
+// Additional locales remain available for existing data; expose after device acceptance tests.
+export const VOICE_LANGUAGES: Language[] = ['en', 'hi', 'te'];
