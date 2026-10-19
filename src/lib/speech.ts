@@ -5,7 +5,7 @@ export const SILENCE_FINISH_MS = 3500;
 export const RESTART_DELAY_MS = 150;
 
 export type ListenState = 'listening' | 'still-listening' | 'stopped';
-export type FinishReason = 'silence' | 'done' | 'error';
+export type FinishReason = 'silence' | 'done' | 'phrase' | 'error';
 
 export interface ListenCallbacks {
   onTranscript: (text: string) => void;
@@ -15,7 +15,9 @@ export interface ListenCallbacks {
 }
 
 export interface ListenSession {
+  readonly active: boolean;
   stop: () => void;
+  cancel: () => void;
 }
 
 interface SpeechRecognitionEventLike {
@@ -33,6 +35,7 @@ interface RecognitionLike {
   onresult: ((e: SpeechRecognitionEventLike) => void) | null;
   onerror: ((e: { error: string }) => void) | null;
   onend: (() => void) | null;
+  onstart: (() => void) | null;
 }
 
 type RecognitionCtor = new () => RecognitionLike;
@@ -51,15 +54,18 @@ export function isSpeechSupported(): boolean {
 }
 
 const FATAL_ERRORS = new Set([
-  'not-allowed', 'service-not-allowed', 'audio-capture',
-  'language-not-supported', 'language-not-available',
+  'not-allowed',
+  'service-not-allowed',
+  'audio-capture',
+  'language-not-supported',
+  'language-not-available',
 ]);
 
 /** Browser-only speech session. Each browser restart gets a fresh result map;
  * final words are committed once and interim words replace in place. */
 export function startListenSession(
   language: Language,
-  callbacks: ListenCallbacks
+  callbacks: ListenCallbacks,
 ): ListenSession | null {
   const Ctor = getRecognitionCtor();
   if (!Ctor) return null;
@@ -74,17 +80,30 @@ export function startListenSession(
   let lastText = '';
 
   const composeSegment = () => {
-    const keys = [...new Set([...finals.keys(), ...interims.keys()])].sort((a, b) => a - b);
-    return keys.map((i) => finals.get(i) ?? interims.get(i) ?? '').filter(Boolean).join(' ');
+    const keys = [...new Set([...finals.keys(), ...interims.keys()])].sort(
+      (a, b) => a - b,
+    );
+    return keys
+      .map((i) => finals.get(i) ?? interims.get(i) ?? '')
+      .filter(Boolean)
+      .join(' ');
   };
-  const composeText = () => [committed, composeSegment()].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  const composeText = () =>
+    [committed, composeSegment()]
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   const clearSilence = () => {
     if (silenceTimer !== null) window.clearTimeout(silenceTimer);
     silenceTimer = null;
   };
   const armSilence = () => {
     clearSilence();
-    silenceTimer = window.setTimeout(() => finish(composeText(), 'silence'), SILENCE_FINISH_MS);
+    silenceTimer = window.setTimeout(
+      () => finish(composeText(), 'silence'),
+      SILENCE_FINISH_MS,
+    );
   };
   const publish = (state: ListenState = 'still-listening') => {
     const text = composeText();
@@ -94,14 +113,27 @@ export function startListenSession(
     }
     callbacks.onStateChange(state);
   };
-  const finish = (text: string, reason: FinishReason) => {
-    if (!active) return;
+  const cleanup = () => {
     active = false;
     clearSilence();
     if (restartTimer !== null) window.clearTimeout(restartTimer);
     restartTimer = null;
+    if (recognition) {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      recognition.onstart = null;
+      try {
+        recognition.abort();
+      } catch {
+        /* already stopped */
+      }
+    }
+  };
+  const finish = (text: string, reason: FinishReason) => {
+    if (!active) return;
+    cleanup();
     callbacks.onStateChange('stopped');
-    try { recognition?.stop(); } catch { /* already stopped */ }
     callbacks.onFinish(text.trim(), reason);
   };
   const startRecognition = () => {
@@ -113,6 +145,12 @@ export function startListenSession(
     rec.lang = SPEECH_LOCALES[language] ?? 'en-IN';
     rec.continuous = true;
     rec.interimResults = true;
+    rec.onstart = () => {
+      if (active) {
+        callbacks.onStateChange('listening');
+        if (silenceTimer === null) armSilence();
+      }
+    };
     rec.onresult = (event) => {
       if (!active || recognition !== rec) return;
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -129,6 +167,15 @@ export function startListenSession(
       }
       publish();
       armSilence();
+      const finalResult = event.results[event.results.length - 1];
+      const ending = composeText().match(
+        /(?:^|\s)(done|that's all|thats all|bas|ho gaya|ayipoyindi|అయిపోయింది)[.!]?$/iu,
+      );
+      if (finalResult?.isFinal && ending) {
+        const text = composeText().slice(0, ending.index).trim();
+        callbacks.onTranscript(text);
+        finish(text, 'phrase');
+      }
     };
     rec.onerror = (event) => {
       if (!active || recognition !== rec) return;
@@ -138,7 +185,12 @@ export function startListenSession(
     rec.onend = () => {
       if (!active || recognition !== rec) return;
       const segmentPart = composeSegment();
-      if (segmentPart) committed = [committed, segmentPart].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+      if (segmentPart)
+        committed = [committed, segmentPart]
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
       finals.clear();
       interims.clear();
       publish('listening');
@@ -159,12 +211,20 @@ export function startListenSession(
   };
 
   startRecognition();
-  callbacks.onStateChange('listening');
-  armSilence();
+  if (active) callbacks.onStateChange('listening');
 
   return {
+    get active() {
+      return active;
+    },
     stop() {
       finish(composeText(), 'done');
+    },
+    cancel() {
+      if (active) {
+        cleanup();
+        callbacks.onStateChange('stopped');
+      }
     },
   };
 }

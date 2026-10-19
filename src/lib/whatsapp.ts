@@ -5,12 +5,12 @@ import { updateInvoice } from './invoiceOps';
 export async function shareInvoiceOnWhatsApp(
   invoice: Invoice,
   customer: Customer,
-  business: Business
+  business: Business,
 ): Promise<void> {
   const message =
     `Hi ${customer.name}, your invoice #${invoice.number} from ${business.name} ` +
     `for ${formatINR(invoice.total)} is ready. Pay via UPI: ${business.upi_id}. ` +
-    `View: https://bolo.app/invoice/${invoice.public_token}`;
+    `View: ${window.location.origin}/i/${invoice.public_token}`;
 
   const phone = customer.phone ? customer.phone.replace(/[^0-9]/g, '') : '';
   const url = phone

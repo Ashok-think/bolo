@@ -1,3 +1,4 @@
+import { safeCustomer, parseWithRules } from './parserRules';
 import { supabase } from './supabase';
 import { LANGUAGE_NAMES } from './format';
 import type { Language } from './types';
@@ -26,13 +27,19 @@ export const AI_TIMEOUT_MS = 5000;
  */
 export async function parseInvoiceTextInstant(
   text: string,
-  lang: Language = 'en'
+  lang: Language = 'en',
 ): Promise<ParsedInvoice> {
   const trimmed = text.trim();
   if (!trimmed) {
-    return { customer: '', items: [], advance: 0, notes: '', ok: false, error: 'empty' };
+    return {
+      customer: '',
+      items: [],
+      advance: 0,
+      notes: '',
+      ok: false,
+      error: 'empty',
+    };
   }
-  const { parseWithRules } = await import('./parserRules');
   const rulesResult = parseWithRules(trimmed, lang);
   return { ...rulesResult, source: 'rules' };
 }
@@ -52,17 +59,21 @@ function normalizeAI(data: AiWireResponse): ParsedInvoice | null {
     .filter(
       (it): it is ParsedItem =>
         typeof (it as ParsedItem)?.name === 'string' &&
-        typeof (it as ParsedItem)?.quantity === 'number' &&
-        typeof (it as ParsedItem)?.unit_price === 'number'
+        Number.isFinite((it as ParsedItem)?.quantity) &&
+        (it as ParsedItem).quantity > 0 &&
+        Number.isFinite((it as ParsedItem)?.unit_price) &&
+        (it as ParsedItem).unit_price >= 0,
     )
     .slice(0, 30);
 
   if (items.length === 0) return null;
 
   return {
-    customer: typeof data.customer === 'string' ? data.customer : '',
+    customer:
+      typeof data.customer === 'string' ? safeCustomer(data.customer) : '',
     items,
-    advance: typeof data.advance === 'number' && data.advance >= 0 ? data.advance : 0,
+    advance:
+      typeof data.advance === 'number' && data.advance >= 0 ? data.advance : 0,
     notes: typeof data.notes === 'string' ? data.notes : '',
     ok: true,
     source: 'ai',
@@ -79,7 +90,7 @@ export async function runBackgroundAI(
   text: string,
   lang: Language = 'en',
   knownCustomers: string[] = [],
-  timeoutMs: number = AI_TIMEOUT_MS
+  timeoutMs: number = AI_TIMEOUT_MS,
 ): Promise<ParsedInvoice | null> {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -88,38 +99,43 @@ export async function runBackgroundAI(
   let timer: number | null = null;
   try {
     const request = (async (): Promise<ParsedInvoice | null> => {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData.session?.access_token;
-    if (!token) return null;
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return null;
 
-    const response = await fetch(
-      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/parse-invoice`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-          Apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/parse-invoice`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+            Apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            text: trimmed,
+            lang,
+            langName: LANGUAGE_NAMES[lang],
+            knownCustomers,
+          }),
         },
-        signal: controller.signal,
-        body: JSON.stringify({
-          text: trimmed,
-          lang,
-          langName: LANGUAGE_NAMES[lang],
-          knownCustomers,
-        }),
-      }
-    );
-    if (!response.ok) return null;
+      );
+      if (!response.ok) return null;
 
-    const data = (await response.json().catch(() => null)) as AiWireResponse | null;
-    return data ? normalizeAI(data) : null;
+      const data = (await response
+        .json()
+        .catch(() => null)) as AiWireResponse | null;
+      return data ? normalizeAI(data) : null;
     })();
     const timeout = new Promise<null>((resolve) => {
-      timer = window.setTimeout(() => {
-        controller.abort();
-        resolve(null);
-      }, Math.max(0, timeoutMs));
+      timer = window.setTimeout(
+        () => {
+          controller.abort();
+          resolve(null);
+        },
+        Math.max(0, timeoutMs),
+      );
     });
     return await Promise.race([request, timeout]);
   } catch {

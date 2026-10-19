@@ -1,34 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Mic, X, Send, Loader2, AlertCircle, ArrowLeft } from 'lucide-react';
 import type { Business, Language } from '@/lib/types';
 import type { ParsedInvoice } from '@/lib/parser';
-import { converseTurn, emptyDraft, draftTotal, ruleBasedTurn } from '@/lib/converse';
+import {
+  converseTurn,
+  emptyDraft,
+  draftTotal,
+  ruleBasedTurn,
+  isClosingUtterance,
+} from '@/lib/converse';
 import type { ConversationDraft, ConversationTurn } from '@/lib/converse';
 import { startListenSession } from '@/lib/speech';
 import type { ListenSession } from '@/lib/speech';
 import { stopPlayback, speakReply } from '@/lib/geminiVoice';
-import { setMicOpen } from '@/lib/voiceFeedback';
-import { LANGUAGE_LABELS } from '@/lib/format';
+import { setMicOpen, speakRepliesEnabled } from '@/lib/voiceFeedback';
+import { LANGUAGE_LABELS, VOICE_LANGUAGES, formatINR } from '@/lib/format';
 import { Button } from '@/components/ui/Button';
-import { formatINR } from '@/lib/format';
-
-const ERROR_MESSAGES: Record<string, string> = {
-  'not-allowed':
-    'Microphone access is blocked. Allow it in your browser settings, or type your answers instead.',
-  'service-not-allowed':
-    'Microphone access is blocked. Allow it in your browser settings, or type your answers instead.',
-  'audio-capture':
-    "We couldn't hear from your microphone. Check that it's plugged in, or type instead.",
-  network: 'Voice input needs an internet connection. Check yours, or type instead.',
-  'no-speech': '',
-  aborted: '',
-};
-
-const LISTEN_START_DELAY_MS = 150;
-const THINKING_INDICATOR_MS = 1500;
-
-type Mode = 'listening' | 'speaking' | 'thinking' | 'idle' | 'error';
-
+type Mode = 'listening' | 'speaking' | 'thinking' | 'idle';
+const EMPTY_MESSAGE =
+  "I didn't hear anything. Tap the mic and speak right away, or type below.";
 export function TalkSheet({
   business,
   customers,
@@ -38,258 +28,276 @@ export function TalkSheet({
   business: Business;
   customers: { name: string }[];
   onClose: () => void;
-  onCompleted: (parsed: ParsedInvoice[], transcript: string, lang: Language) => void;
+  onCompleted: (
+    parsed: ParsedInvoice[],
+    transcript: string,
+    lang: Language,
+  ) => void;
 }) {
   const [lang, setLang] = useState<Language>(business.language);
   const [draft, setDraft] = useState<ConversationDraft>(emptyDraft());
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [liveText, setLiveText] = useState('');
-  const [mode, setMode] = useState<Mode>('listening');
+  const [mode, setMode] = useState<Mode>('idle');
   const [listening, setListening] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [typed, setTyped] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [stashed, setStashed] = useState<ConversationDraft[]>([]);
-
-  const sessionRef = useRef<ListenSession | null>(null);
-  const modeRef = useRef<Mode>('listening');
+  const [lastError, setLastError] = useState('none');
   const draftRef = useRef(draft);
   const turnsRef = useRef(turns);
-  const restartTimerRef = useRef<number | null>(null);
-  const thinkingTimerRef = useRef<number | null>(null);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const closingRef = useRef(false);
-  const busyRef = useRef(false);
-  const handleUtteranceRef = useRef<((text: string) => Promise<void>) | null>(null);
+  const sessionRef = useRef<ListenSession | null>(null);
+  const recognitionTextRef = useRef('');
+  const editBaseRef = useRef('');
+  const editOffsetRef = useRef(0);
   const typedRef = useRef('');
   const typedEditedRef = useRef(false);
-
-  draftRef.current = draft;
-  turnsRef.current = turns;
-
-  function setModeBoth(m: Mode) {
-    modeRef.current = m;
-    setMode(m);
-  }
-
-  const stopListening = useCallback(() => {
-    setMicOpen(false);
-    sessionRef.current?.stop();
+  const closingRef = useRef(false);
+  const busyRef = useRef(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sequenceRef = useRef(0);
+  const aiRef = useRef<AbortController | null>(null);
+  const restartRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSubmittedRef = useRef('');
+  function stopListening() {
+    sessionRef.current?.cancel();
     sessionRef.current = null;
     setListening(false);
-  }, []);
-
-  const scheduleRestartRef = useRef<(() => void) | null>(null);
-
-  const finishWithTranscript = useCallback((text: string) => {
     setMicOpen(false);
-    const clean = (typedEditedRef.current ? typedRef.current : text).trim();
-    setListening(false);
+  }
+  function suspend() {
+    sequenceRef.current++;
+    aiRef.current?.abort();
+    stopListening();
+    stopPlayback();
+    if (restartRef.current) clearTimeout(restartRef.current);
+    busyRef.current = false;
+    setShowThinking(false);
+    setMode('idle');
+  }
+  function saveTurns(value: ConversationTurn[]) {
+    turnsRef.current = value;
+    setTurns(value);
+  }
+  function saveDraft(value: ConversationDraft) {
+    draftRef.current = value;
+    setDraft(value);
+  }
+  function startListening() {
+    if (closingRef.current) return;
+    suspend();
+    setError(null);
+    setLastError('none');
     setLiveText('');
-    typedRef.current = clean;
-    setTyped(clean);
-    if (clean) {
-      typedEditedRef.current = false;
-      setTurns((cur) => [...cur, { role: 'user', text: clean }]);
-      void handleUtteranceRef.current?.(clean);
-    } else {
-      scheduleRestartRef.current?.();
-    }
-  }, []);
-
-  const startBrowserFallback = useCallback(() => {
-    if (closingRef.current || busyRef.current) return;
+    typedEditedRef.current = false;
+    recognitionTextRef.current = '';
+    typedRef.current = '';
+    setTyped('');
     setMicOpen(true);
     const session = startListenSession(lang, {
-      onTranscript: (text) => {
+      onTranscript(text) {
         setLiveText(text);
-        if (!typedEditedRef.current) {
-          typedRef.current = text;
-          setTyped(text);
+        recognitionTextRef.current = text;
+        typedRef.current = typedEditedRef.current
+          ? [
+              editBaseRef.current,
+              text.trim().split(/\s+/).slice(editOffsetRef.current).join(' '),
+            ]
+              .filter(Boolean)
+              .join(' ')
+          : text;
+        setTyped(typedRef.current);
+      },
+      onStateChange(state) {
+        setListening(state !== 'stopped');
+      },
+      onFinish(text, reason) {
+        sessionRef.current = null;
+        setMicOpen(false);
+        setLiveText('');
+        setListening(false);
+        const clean = (typedEditedRef.current ? typedRef.current : text).trim();
+        if (clean) void handleUtterance(clean, reason === 'phrase');
+        else if (reason === 'phrase' && draftRef.current.items.length) {
+          handleDone();
+        } else {
+          setError(EMPTY_MESSAGE);
+          setMode('idle');
         }
       },
-      onStateChange: (state) => setListening(state !== 'stopped'),
-      onFinish: (text) => {
-        sessionRef.current = null;
-        finishWithTranscript(text);
-      },
-      onError: (code) => {
-        const msg = ERROR_MESSAGES[code];
-        if (msg) setError(msg);
+      onError(code) {
+        setLastError(code);
+        if (
+          [
+            'not-allowed',
+            'service-not-allowed',
+            'audio-capture',
+            'language-not-supported',
+          ].includes(code)
+        )
+          setError(
+            'Microphone unavailable. Check browser permission or type below.',
+          );
       },
     });
     if (!session) {
-      setModeBoth('error');
-      setError("This browser doesn't support voice input. Please type instead.");
+      setMicOpen(false);
+      setError('Voice input is unavailable in this browser. Type below.');
+      setMode('idle');
       return;
     }
-    sessionRef.current = session;
-    setModeBoth('listening');
-    setListening(true);
-  }, [lang, finishWithTranscript]);
-
-  const startListening = useCallback(() => {
-    if (closingRef.current || busyRef.current) return;
-    setError(null);
-    setLiveText('');
-    typedEditedRef.current = false;
-    typedRef.current = '';
-    setTyped('');
-    startBrowserFallback();
-  }, [lang, startBrowserFallback, finishWithTranscript]);
-
-  const scheduleRestart = useCallback(() => {
-    if (closingRef.current || busyRef.current) return;
-    if (restartTimerRef.current) window.clearTimeout(restartTimerRef.current);
-    restartTimerRef.current = window.setTimeout(() => {
-      restartTimerRef.current = null;
-      startListening();
-    }, LISTEN_START_DELAY_MS);
-  }, [startListening]);
-
-  scheduleRestartRef.current = scheduleRestart;
-
-  async function handleUtterance(text: string) {
-    if (busyRef.current || closingRef.current) return;
+    sessionRef.current = session.active ? session : null;
+    if (session.active) setMode('listening');
+  }
+  async function handleUtterance(text: string, closeAfter = false) {
+    if (closingRef.current) return;
+    stopListening();
+    stopPlayback();
+    const seq = ++sequenceRef.current;
     busyRef.current = true;
-    setModeBoth('thinking');
-    thinkingTimerRef.current = window.setTimeout(
-      () => setShowThinking(true),
-      THINKING_INDICATOR_MS
-    );
-
+    setError(null);
+    setMode('thinking');
+    setShowThinking(true);
     const priorDraft = draftRef.current;
     const priorTurns = turnsRef.current;
-    const ruleResult = ruleBasedTurn(
+    const withUser = [...priorTurns, { role: 'user' as const, text }];
+    const rules = ruleBasedTurn(
       priorDraft,
       text,
-      lang,
-      customers.map((c) => c.name)
-    );
-    setDraft(ruleResult.draft);
-    draftRef.current = ruleResult.draft;
-    const ruleTurns = [...turnsRef.current, { role: 'bolo' as const, text: ruleResult.reply }];
-    setTurns(ruleTurns);
-    turnsRef.current = ruleTurns;
-    setShowThinking(false);
-    if (thinkingTimerRef.current) {
-      window.clearTimeout(thinkingTimerRef.current);
-      thinkingTimerRef.current = null;
-    }
-
-    // Text-only AI enhancement runs in the background; the usable rule result
-    // is already visible and spoken while the request is pending.
-    const aiController = new AbortController();
-    let aiTimer: number | undefined;
-    const aiTimeout = new Promise<null>((resolve) => {
-      aiTimer = window.setTimeout(() => {
-        aiController.abort();
-        resolve(null);
-      }, 5000);
-    });
-    const aiResultPromise = converseTurn(
-      priorDraft,
-      text,
-      priorTurns,
       lang,
       customers.map((c) => c.name),
-      aiController.signal
     );
-    if (closingRef.current) {
-      aiController.abort();
-      if (aiTimer !== undefined) window.clearTimeout(aiTimer);
-      busyRef.current = false;
-      return;
-    }
-    setModeBoth('speaking');
-    await speakReply(ruleResult.reply, lang);
-    const aiResult = await Promise.race([aiResultPromise, aiTimeout]);
-    if (aiTimer !== undefined) window.clearTimeout(aiTimer);
-    if (aiResult?.source === 'ai' && !closingRef.current) {
-      setDraft(aiResult.draft);
-      draftRef.current = aiResult.draft;
-      const updatedTurns = [...turnsRef.current];
-      const lastBolo = updatedTurns.map((turn) => turn.role).lastIndexOf('bolo');
-      if (lastBolo >= 0) updatedTurns[lastBolo] = { role: 'bolo', text: aiResult.reply };
-      setTurns(updatedTurns);
-      turnsRef.current = updatedTurns;
-    }
-    busyRef.current = false;
-    if (closingRef.current) return;
-
-    setModeBoth('idle');
-    scheduleRestart();
-  }
-
-  handleUtteranceRef.current = handleUtterance;
-
-  useEffect(() => {
-    closingRef.current = false;
-    const onHide = () => {
-      closingRef.current = true;
-      stopPlayback();
-      stopListening();
-    };
-    window.addEventListener('pagehide', onHide);
-    const onVis = () => {
-      if (document.visibilityState === 'hidden') onHide();
-    };
-    document.addEventListener('visibilitychange', onVis);
-    return () => {
-      window.removeEventListener('pagehide', onHide);
-      window.removeEventListener('visibilitychange', onVis);
-      closingRef.current = true;
-      stopPlayback();
-      stopListening();
-      if (restartTimerRef.current) window.clearTimeout(restartTimerRef.current);
-      if (thinkingTimerRef.current) window.clearTimeout(thinkingTimerRef.current);
-      setMicOpen(false);
-    };
-  }, [stopListening]);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [turns.length, showThinking, liveText]);
-
-  function submitTyped() {
-    const text = typed.trim();
-    if (!text || busyRef.current || closingRef.current) return;
+    saveDraft(rules.draft);
+    saveTurns([...withUser, { role: 'bolo', text: rules.reply }]);
+    lastSubmittedRef.current = text;
+    typedRef.current = '';
     setTyped('');
-    stopListening();
-    setTurns((cur) => [...cur, { role: 'user', text }]);
+    setLiveText('');
+    const ctrl = new AbortController();
+    aiRef.current = ctrl;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const indicator = setTimeout(() => setShowThinking(false), 1800);
+    try {
+      const ai = await Promise.race([
+        converseTurn(
+          priorDraft,
+          text,
+          priorTurns,
+          lang,
+          customers.map((c) => c.name),
+          ctrl.signal,
+        ),
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(() => {
+            ctrl.abort();
+            resolve(null);
+          }, 4500);
+        }),
+      ]);
+      if (seq !== sequenceRef.current || closingRef.current) return;
+      const result = ai?.source === 'ai' ? ai : rules;
+      saveDraft(result.draft);
+      saveTurns([...withUser, { role: 'bolo', text: result.reply }]);
+      setShowThinking(false);
+      if (speakRepliesEnabled()) {
+        setMode('speaking');
+        await speakReply(result.reply, lang);
+      }
+      if (seq !== sequenceRef.current || closingRef.current) return;
+      if (
+        (closeAfter || isClosingUtterance(text)) &&
+        result.draft.customer &&
+        result.draft.items.some((i) => i.unit_price > 0)
+      ) {
+        finishReview(result.draft, withUser);
+        return;
+      }
+      setMode('idle');
+      busyRef.current = false;
+      restartRef.current = setTimeout(() => {
+        if (seq === sequenceRef.current && !closingRef.current)
+          startListening();
+      }, 400);
+    } catch {
+      if (seq === sequenceRef.current) {
+        setMode('idle');
+        setError('Your draft is ready. Tap the mic to continue, or review it.');
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      clearTimeout(indicator);
+      if (seq === sequenceRef.current) {
+        busyRef.current = false;
+        setShowThinking(false);
+      }
+    }
+  }
+  function submitTyped() {
+    const text = typedRef.current.trim() || typed.trim();
+    if (!text || closingRef.current) return;
+    suspend();
     void handleUtterance(text);
   }
-
-  function buildParsed(d: ConversationDraft): ParsedInvoice {
-    return {
-      customer: d.customer,
-      items: d.items.map((it) => ({ ...it })),
-      advance: d.advance,
-      notes: d.notes,
-      ok: Boolean(d.customer) && d.items.length > 0,
-      source: 'rules',
-    };
-  }
-
-  function handleDone() {
+  function finishReview(value: ConversationDraft, history = turnsRef.current) {
+    if (!value.items.length && !value.customer) {
+      setError(EMPTY_MESSAGE);
+      return;
+    }
     closingRef.current = true;
-    stopPlayback();
-    stopListening();
-    if (restartTimerRef.current) window.clearTimeout(restartTimerRef.current);
-    if (thinkingTimerRef.current) window.clearTimeout(thinkingTimerRef.current);
-    const current = buildParsed(draftRef.current);
-    const list: ParsedInvoice[] = [
-      ...stashed.map((s) => buildParsed(s)).filter((p) => p.ok),
-    ];
-    if (list.length === 0 || current.ok) list.push(current);
-    const transcriptSummary = turnsRef.current
-      .filter((t) => t.role === 'user')
-      .map((t) => t.text)
-      .join('\n');
-    onCompleted(list, transcriptSummary, lang);
+    suspend();
+    onCompleted(
+      [
+        {
+          customer: value.customer,
+          items: value.items,
+          advance: value.advance,
+          notes: value.notes,
+          ok: value.items.length > 0,
+          source: 'rules',
+        },
+      ],
+      history
+        .filter((t) => t.role === 'user')
+        .map((t) => t.text)
+        .join('\n'),
+      lang,
+    );
     onClose();
   }
-
+  function handleDone() {
+    const text = typedRef.current.trim();
+    stopListening();
+    if (text && text !== lastSubmittedRef.current) {
+      const result = ruleBasedTurn(
+        draftRef.current,
+        text,
+        lang,
+        customers.map((c) => c.name),
+      );
+      saveDraft(result.draft);
+      const history = [...turnsRef.current, { role: 'user' as const, text }];
+      saveTurns(history);
+      finishReview(result.draft, history);
+    } else finishReview(draftRef.current);
+  }
+  useEffect(() => {
+    closingRef.current = false;
+    const hide = () => suspend();
+    const visibility = () => {
+      if (document.hidden) hide();
+    };
+    window.addEventListener('pagehide', hide);
+    document.addEventListener('visibilitychange', visibility);
+    return () => {
+      closingRef.current = true;
+      suspend();
+      window.removeEventListener('pagehide', hide);
+      document.removeEventListener('visibilitychange', visibility);
+    };
+  }, []);
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [turns, liveText]);
   const total = draftTotal(draft);
   const balance = Math.max(0, total - draft.advance);
   const statusText =
@@ -299,12 +307,16 @@ export function TalkSheet({
         ? 'Listening…'
         : mode === 'thinking'
           ? 'Working…'
-          : 'Paused';
+          : 'Ready · tap mic';
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center">
-      <button aria-label="Close" onClick={onClose} className="absolute inset-0 bg-ink/50" />
-      <div className="relative w-full md:max-w-md bg-background rounded-t-card pt-safe h-[92vh] flex flex-col">
+      <button
+        aria-label="Close"
+        onClick={onClose}
+        className="absolute inset-0 bg-ink/50"
+      />
+      <div className="relative w-full md:max-w-md bg-background rounded-t-card pt-safe h-[92dvh] flex flex-col overflow-hidden">
         <div className="px-5 pt-4 pb-3 flex items-center justify-between border-b border-line">
           <div className="flex items-center gap-1">
             <button
@@ -314,7 +326,9 @@ export function TalkSheet({
             >
               <ArrowLeft size={20} />
             </button>
-            <span className="font-display font-bold text-lg text-ink">Talk to Bolo</span>
+            <span className="font-display font-bold text-lg text-ink">
+              Talk to Bolo
+            </span>
           </div>
           <button
             onClick={onClose}
@@ -326,8 +340,13 @@ export function TalkSheet({
         </div>
 
         <div className="flex flex-wrap justify-center gap-2 px-5 py-2 border-b border-line">
-          {(Object.keys(LANGUAGE_LABELS) as Language[]).map((language) => (
-            <button key={language} onClick={() => setLang(language)} className={`shrink-0 min-h-[36px] px-3 rounded-full text-xs font-medium border ${lang === language ? 'bg-primary text-white border-primary' : 'bg-card border-line text-muted'}`}>
+          {VOICE_LANGUAGES.map((language) => (
+            <button
+              key={language}
+              disabled={listening || busyRef.current}
+              onClick={() => setLang(language)}
+              className={`shrink-0 min-h-[48px] px-3 rounded-full text-xs font-medium border ${lang === language ? 'bg-primary text-white border-primary' : 'bg-card border-line text-muted'}`}
+            >
               {LANGUAGE_LABELS[language].label}
             </button>
           ))}
@@ -350,7 +369,10 @@ export function TalkSheet({
             {draft.items.length > 0 && (
               <ul className="mt-2 space-y-1">
                 {draft.items.map((it, i) => (
-                  <li key={i} className="flex items-center justify-between text-sm">
+                  <li
+                    key={i}
+                    className="flex items-center justify-between text-sm"
+                  >
                     <span className="text-ink truncate pr-2">
                       {it.quantity} × {it.name}
                     </span>
@@ -362,21 +384,32 @@ export function TalkSheet({
               </ul>
             )}
             <div className="flex items-center justify-between mt-2 pt-2 border-t border-primary/20 text-sm">
-              <span className="text-muted">Advance {formatINR(draft.advance)}</span>
-              <span className="font-medium text-ink">Balance {formatINR(balance)}</span>
+              <span className="text-muted">
+                Advance {formatINR(draft.advance)}
+              </span>
+              <span className="font-medium text-ink">
+                Balance {formatINR(balance)}
+              </span>
             </div>
           </div>
         </div>
 
         {/* Chat bubbles */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-2">
+        <div
+          ref={scrollRef}
+          className="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-2"
+        >
           {turns.length === 0 && !liveText && (
             <p className="text-center text-muted text-sm mt-6 px-4">
-              Just talk — "Ravi bought three shirts at 200 each", pause, then "advance 300".
+              Just talk — "Ravi bought three shirts at 200 each", pause, then
+              "advance 300".
             </p>
           )}
           {turns.map((t, i) => (
-            <div key={i} className={`flex ${t.role === 'user' ? 'justify-end' : 'justify-start'} bubble-in`}>
+            <div
+              key={i}
+              className={`flex ${t.role === 'user' ? 'justify-end' : 'justify-start'} bubble-in`}
+            >
               <div
                 className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
                   t.role === 'user'
@@ -391,10 +424,21 @@ export function TalkSheet({
           {listening && (
             <div className="flex justify-end bubble-in">
               <div className="rounded-2xl px-4 py-3 bg-primary/40 flex items-center gap-1.5">
-                <span className="listen-bar inline-block w-1 h-3.5 rounded-full bg-white/90" style={{ animationDelay: '0ms' }} />
-                <span className="listen-bar inline-block w-1 h-3.5 rounded-full bg-white/90" style={{ animationDelay: '150ms' }} />
-                <span className="listen-bar inline-block w-1 h-3.5 rounded-full bg-white/90" style={{ animationDelay: '300ms' }} />
-                <span className="text-xs text-white italic ml-1">I'm listening…</span>
+                <span
+                  className="listen-bar inline-block w-1 h-3.5 rounded-full bg-white/90"
+                  style={{ animationDelay: '0ms' }}
+                />
+                <span
+                  className="listen-bar inline-block w-1 h-3.5 rounded-full bg-white/90"
+                  style={{ animationDelay: '150ms' }}
+                />
+                <span
+                  className="listen-bar inline-block w-1 h-3.5 rounded-full bg-white/90"
+                  style={{ animationDelay: '300ms' }}
+                />
+                <span className="text-xs text-white italic ml-1">
+                  I'm listening…
+                </span>
               </div>
             </div>
           )}
@@ -408,6 +452,34 @@ export function TalkSheet({
           )}
         </div>
 
+        <div className="px-5 flex gap-2 flex-wrap">
+          <button
+            className="min-h-[48px] text-sm text-primary"
+            onClick={() => {
+              stopListening();
+              typedEditedRef.current = true;
+              typedRef.current =
+                'Ravi Kumar, 3 shirts 200 each, 1 alteration 150, advance 300';
+              setTyped(typedRef.current);
+            }}
+          >
+            Try an example
+          </button>
+          {turns.some((t) => t.role === 'bolo') && (
+            <button
+              className="min-h-[48px] text-sm text-primary"
+              onClick={() => {
+                suspend();
+                void speakReply(
+                  [...turns].reverse().find((t) => t.role === 'bolo')!.text,
+                  lang,
+                );
+              }}
+            >
+              Play reply
+            </button>
+          )}
+        </div>
         {/* Controls */}
         <div className="border-t border-line px-5 py-3 pb-safe">
           {error && (
@@ -424,31 +496,48 @@ export function TalkSheet({
               <button
                 onClick={startListening}
                 aria-label="Start listening"
-                disabled={busyRef.current || listening}
-                className="w-10 h-10 rounded-full bg-primary flex items-center justify-center transition duration-200 active:scale-95 disabled:opacity-50"
+                disabled={listening}
+                className="w-12 h-12 rounded-full bg-primary flex items-center justify-center transition duration-200 active:scale-95 disabled:opacity-50"
               >
                 <Mic size={18} className="text-white" />
               </button>
-              <Button variant="outline" className="min-h-[40px] px-4" onClick={handleDone}>
+              <Button
+                variant="outline"
+                className="min-h-[40px] px-4"
+                onClick={handleDone}
+              >
                 Done
               </Button>
             </div>
           </div>
+          <p className="text-[11px] text-muted mb-2 break-words">
+            engine: browser | status: {listening ? 'listening' : 'idle'} | last
+            error: {lastError} | words:{' '}
+            {typed.trim() ? typed.trim().split(/\s+/).length : 0}
+          </p>
           <div className="flex gap-2">
             <input
               value={typed}
-              onChange={(e) => { typedEditedRef.current = true; typedRef.current = e.target.value; setTyped(e.target.value); }}
+              onChange={(e) => {
+                typedEditedRef.current = true;
+                editBaseRef.current = e.target.value;
+                editOffsetRef.current = recognitionTextRef.current.trim()
+                  ? recognitionTextRef.current.trim().split(/\s+/).length
+                  : 0;
+                typedRef.current = e.target.value;
+                setTyped(e.target.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') submitTyped();
               }}
               placeholder="Type instead…"
-              className="flex-1 min-h-[44px] px-4 rounded-full border border-line bg-card text-ink placeholder:text-muted/60 focus:outline-none focus:border-primary transition duration-200"
+              className="min-w-0 flex-1 min-h-[48px] px-4 rounded-full border border-line bg-card text-ink placeholder:text-muted/60 focus:outline-none focus:border-primary transition duration-200"
             />
             <button
               onClick={submitTyped}
               aria-label="Send"
               disabled={!typed.trim()}
-              className="w-11 h-11 rounded-full bg-primary flex items-center justify-center transition duration-200 active:scale-95 disabled:opacity-50"
+              className="w-12 h-12 rounded-full bg-primary flex items-center justify-center transition duration-200 active:scale-95 disabled:opacity-50"
             >
               <Send size={18} className="text-white" />
             </button>

@@ -1,7 +1,7 @@
 import type { Language } from '@/lib/types';
-import { LANGUAGE_LABELS } from '@/lib/format';
+import { LANGUAGE_LABELS, VOICE_LANGUAGES } from '@/lib/format';
 
-const ORDER: Language[] = ['en', 'hi', 'te', 'ta', 'kn', 'ml', 'mr', 'bn', 'gu', 'ur'];
+const ORDER = VOICE_LANGUAGES;
 
 export function LanguagePicker({
   value,

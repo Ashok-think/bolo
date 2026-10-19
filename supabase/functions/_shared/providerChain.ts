@@ -1,7 +1,3 @@
-// Shared provider fallback chain for edge functions (Deno):
-// Gemini first, then the OpenAI-compatible provider, each with a 4s timeout.
-// The answering provider is logged to the console only, never sent to clients.
-
 export interface ProviderConfig {
   name: string;
   baseUrl: string;
@@ -9,108 +5,160 @@ export interface ProviderConfig {
   model: string;
   supportsReasoningEffort: boolean;
 }
-
-const PROVIDER_TIMEOUT_MS = 15000;
-// Gemini's OpenAI compatibility endpoint
-export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
-
 export function buildProviderChain(): ProviderConfig[] {
-  const geminiKey = Deno.env.get("GEMINI_API_KEY");
-  const geminiModel = Deno.env.get("GEMINI_MODEL");
-  const legacyKey = Deno.env.get("AI_API_KEY");
-  const legacyBaseUrl = Deno.env.get("AI_BASE_URL");
-  const legacyModel = Deno.env.get("AI_MODEL");
-
   const providers: ProviderConfig[] = [];
-  if (geminiKey && geminiModel) {
+  const key = Deno.env.get('GEMINI_API_KEY');
+  if (key)
     providers.push({
-      name: "gemini",
-      baseUrl: GEMINI_BASE_URL,
-      apiKey: geminiKey,
-      model: geminiModel,
+      name: 'gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      apiKey: key,
+      model: Deno.env.get('GEMINI_MODEL') || 'gemini-2.5-flash',
       supportsReasoningEffort: false,
     });
-  }
-  if (legacyKey && legacyBaseUrl && legacyModel) {
+  const apiKey = Deno.env.get('AI_API_KEY'),
+    baseUrl = Deno.env.get('AI_BASE_URL'),
+    model = Deno.env.get('AI_MODEL');
+  if (apiKey && baseUrl && model)
     providers.push({
-      name: "openai-compatible",
-      baseUrl: legacyBaseUrl,
-      apiKey: legacyKey,
-      model: legacyModel,
-      supportsReasoningEffort: true,
+      name: 'openai-compatible',
+      baseUrl,
+      apiKey,
+      model,
+      supportsReasoningEffort: /^(o[134]|gpt-5)/i.test(model),
     });
-  }
   return providers;
 }
-
 export interface ProviderCallResult<T> {
   value: T | null;
   providerName: string | null;
+  reason?: string;
 }
-
 export async function callProviderChain<T>(
   providers: ProviderConfig[],
   buildBody: (provider: ProviderConfig) => Record<string, unknown>,
-  extract: (payload: unknown) => T | null,
-  logContext: string
+  extract: (raw: unknown) => T | null,
+  context: string,
 ): Promise<ProviderCallResult<T>> {
-  for (const provider of providers) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
-
+  const deadline = Date.now() + 4000;
+  let reason = 'No provider configured';
+  for (let index = 0; index < providers.length; index++) {
+    const provider = providers[index];
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const budget = Math.min(
+      4000,
+      Math.floor(remaining / (providers.length - index)),
+    );
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), budget);
     try {
-      const completion = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${provider.apiKey}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify(buildBody(provider)),
+      const body = buildBody(provider);
+      const messages = body.messages as { role: string; content: string }[];
+      let endpoint = provider.baseUrl.replace(/\/$/, '') + '/chat/completions';
+      let headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${provider.apiKey}`,
+      };
+      let request: Record<string, unknown> = { ...body, max_tokens: 1200 };
+      delete request.responseSchema;
+      if (provider.name === 'gemini') {
+        const model = provider.model.replace(/^models\//, '');
+        endpoint = `${provider.baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
+        headers = {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': provider.apiKey,
+        };
+        const thinkingConfig = /^gemini-2\.5/.test(model)
+          ? { thinkingBudget: /pro/.test(model) ? 128 : 0 }
+          : /^gemini-[34]/.test(model)
+            ? { thinkingLevel: /flash/.test(model) ? 'minimal' : 'low' }
+            : undefined;
+        request = {
+          systemInstruction: {
+            parts: [
+              {
+                text: messages
+                  .filter((m) => m.role === 'system')
+                  .map((m) => m.content)
+                  .join('\n'),
+              },
+            ],
+          },
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: messages
+                    .filter((m) => m.role !== 'system')
+                    .map((m) => m.content)
+                    .join('\n'),
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 1200,
+            responseMimeType: 'application/json',
+            ...(body.responseSchema
+              ? { responseSchema: body.responseSchema }
+              : {}),
+            ...(thinkingConfig ? { thinkingConfig } : {}),
+          },
+        };
+      }
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        signal: abort.signal,
+        body: JSON.stringify(request),
       });
-      clearTimeout(timer);
-
-      if (!completion.ok) {
-        console.log(`${logContext}: provider ${provider.name} failed: HTTP ${completion.status}`);
+      if (!response.ok) {
+        reason =
+          response.status === 429
+            ? 'Rate limited'
+            : response.status === 401 || response.status === 403
+              ? 'API key or permission rejected'
+              : response.status === 404
+                ? 'Model unavailable'
+                : 'Provider request failed';
         continue;
       }
-
-      const payload = await completion.json().catch(() => null);
-      const contentRaw = payload?.choices?.[0]?.message?.content;
-      if (typeof contentRaw !== "string") {
-        console.log(`${logContext}: provider ${provider.name} returned no message content`);
+      const payload = await response.json();
+      const content =
+        provider.name === 'gemini'
+          ? payload?.candidates?.[0]?.content?.parts
+              ?.filter(
+                (p: { text?: unknown; thought?: boolean }) =>
+                  typeof p.text === 'string' && !p.thought,
+              )
+              .map((p: { text: string }) => p.text)
+              .join('')
+          : payload?.choices?.[0]?.message?.content;
+      if (typeof content !== 'string') {
+        reason = 'No structured response';
         continue;
       }
-      // Strip markdown code fences Gemini sometimes wraps JSON in.
-      const content = contentRaw
-        .trim()
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/```\s*$/, "")
-        .trim();
-      if (!content) {
-        console.log(`${logContext}: provider ${provider.name} returned empty content`);
-        continue;
-      }
-
-      let raw: unknown;
-      try {
-        raw = JSON.parse(content);
-      } catch {
-        console.log(`${logContext}: provider ${provider.name} returned invalid JSON`);
-        continue;
-      }
-
+      const raw = JSON.parse(
+        content
+          .trim()
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/```\s*$/, ''),
+      );
       const value = extract(raw);
       if (value === null) {
-        console.log(`${logContext}: provider ${provider.name} returned an unusable result`);
+        reason = 'Response validation failed';
         continue;
       }
+      console.log(`${context}: ${provider.name} answered`);
       return { value, providerName: provider.name };
-    } catch (e) {
+    } catch {
+      reason = abort.signal.aborted ? 'Timed out' : 'Request failed';
+    } finally {
       clearTimeout(timer);
-      const why = e instanceof Error && e.name === "AbortError" ? "timeout" : "error";
-      console.log(`${logContext}: provider ${provider.name} failed: ${why}`);
     }
   }
-  return { value: null, providerName: null };
+  return { value: null, providerName: null, reason };
 }

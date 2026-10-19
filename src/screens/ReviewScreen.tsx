@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Trash2, AlertTriangle, Sparkles, RefreshCw, MicOff, Loader2, ArrowLeft } from 'lucide-react';
+import {
+  Plus,
+  Trash2,
+  AlertTriangle,
+  Sparkles,
+  RefreshCw,
+  MicOff,
+  Loader2,
+  ArrowLeft,
+} from 'lucide-react';
 import type { Business, Customer, Language } from '@/lib/types';
-import { parseInvoiceTextInstant, runBackgroundAI, AI_TIMEOUT_MS } from '@/lib/parser';
+import {
+  parseInvoiceTextInstant,
+  runBackgroundAI,
+  AI_TIMEOUT_MS,
+} from '@/lib/parser';
 import type { ParsedInvoice, ParsedItem } from '@/lib/parser';
 import { createInvoice } from '@/lib/invoiceOps';
 import { BoloLogo } from '@/components/BoloLogo';
@@ -43,13 +56,18 @@ export function ReviewScreen({
   const [aiUsed, setAiUsed] = useState(parsed.source === 'ai');
   const [aiImproved, setAiImproved] = useState(false);
   const [aiPending, setAiPending] = useState(false);
-  const userEditedRef = useRef(false);
+  const userEditedRef = useRef(new Set<string>());
+  const aiVersionRef = useRef(0);
+  const savingRef = useRef(false);
+  const requestIdRef = useRef(crypto.randomUUID());
 
   const [customerName, setCustomerName] = useState(parsed.customer);
   const [items, setItems] = useState<ParsedItem[]>(() =>
-    parsed.items.map((it) => ({ ...it }))
+    parsed.items.map((it) => ({ ...it })),
   );
-  const [advance, setAdvance] = useState(parsed.advance ? String(parsed.advance) : '');
+  const [advance, setAdvance] = useState(
+    parsed.advance ? String(parsed.advance) : '',
+  );
   const [notes, setNotes] = useState(parsed.notes);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,38 +78,44 @@ export function ReviewScreen({
   // Background AI: quietly fills fields the user hasn't touched, then shows
   // the "Improved with AI" chip. Any failure is silent. The AI window is
   // bounded; whichever provider answers first inside it wins.
-  useEffect(() => {
-    if (transcriptEmpty) return;
-    let cancelled = false;
-    void (async () => {
-      setAiPending(true);
+  async function improve(text: string) {
+    const version = ++aiVersionRef.current;
+    setAiPending(true);
+    try {
       const ai = await runBackgroundAI(
-        transcript,
+        text,
         lang,
         customers.map((c) => c.name),
-        AI_TIMEOUT_MS
+        AI_TIMEOUT_MS,
       );
-      if (cancelled) return;
-      setAiPending(false);
-      if (!ai || userEditedRef.current) return;
+      if (version !== aiVersionRef.current || !ai) return;
+      const edited = userEditedRef.current;
+      if (!edited.has('customer') && ai.customer) setCustomerName(ai.customer);
+      if (!edited.has('items') && ai.items.length)
+        setItems(ai.items.map((it) => ({ ...it })));
+      if (!edited.has('advance'))
+        setAdvance(ai.advance ? String(ai.advance) : '');
+      if (!edited.has('notes')) setNotes(ai.notes);
       setAiUsed(true);
       setAiImproved(true);
-      if (ai.customer) setCustomerName(ai.customer);
-      if (ai.items.length > 0) setItems(ai.items.map((it) => ({ ...it })));
-      setAdvance(ai.advance ? String(ai.advance) : '');
-      setNotes(ai.notes);
-    })();
+    } finally {
+      if (version === aiVersionRef.current) setAiPending(false);
+    }
+  }
+  useEffect(() => {
+    if (!transcriptEmpty) void improve(transcript);
     return () => {
-      cancelled = true;
+      aiVersionRef.current++;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const suggestions = useMemo(() => {
     const q = customerName.trim().toLowerCase();
     if (!q) return [];
     return customers
-      .filter((c) => c.name.toLowerCase().includes(q) && c.name !== customerName)
+      .filter(
+        (c) => c.name.toLowerCase().includes(q) && c.name !== customerName,
+      )
       .slice(0, 4);
   }, [customerName, customers]);
 
@@ -100,14 +124,14 @@ export function ReviewScreen({
     const q = customerName.trim().toLowerCase();
     if (!q) return null;
     const theirs = all.filter(
-      (inv) => (inv.customer_name ?? '').toLowerCase() === q
+      (inv) => (inv.customer_name ?? '').toLowerCase() === q,
     );
     if (theirs.length === 0) return null;
     const paid = theirs.filter((inv) => inv.status === 'paid');
     const unpaid = theirs.filter((inv) => inv.status !== 'paid');
     const score = computeTrustWithOutstanding(
       paid.map((p) => ({ ...p, paid_at: p.paid_at ?? null })),
-      unpaid
+      unpaid,
     );
     return score;
   }, [customerName, all]);
@@ -121,16 +145,18 @@ export function ReviewScreen({
   const [priceConfirmed, setPriceConfirmed] = useState(false);
 
   useEffect(() => {
-    if (!highPricedItem) setPriceConfirmed(false);
-  }, [highPricedItem]);
+    setPriceConfirmed(false);
+  }, [items]);
 
-  function trackEdit() {
-    userEditedRef.current = true;
+  function trackEdit(field = 'items') {
+    userEditedRef.current.add(field);
   }
 
   function updateItem(i: number, patch: Partial<ParsedItem>) {
     trackEdit();
-    setItems((cur) => cur.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+    setItems((cur) =>
+      cur.map((it, idx) => (idx === i ? { ...it, ...patch } : it)),
+    );
   }
 
   function addItem() {
@@ -146,7 +172,8 @@ export function ReviewScreen({
   async function handleReRead() {
     const text = saidText.trim();
     if (!text) return;
-    trackEdit();
+    aiVersionRef.current++;
+    userEditedRef.current.clear();
     setReParsing(true);
     const result = await parseInvoiceTextInstant(text, lang);
     setReParsing(false);
@@ -155,6 +182,7 @@ export function ReviewScreen({
     setItems(result.items.map((it) => ({ ...it })));
     setAdvance(result.advance ? String(result.advance) : '');
     setNotes(result.notes);
+    void improve(text);
   }
 
   function handleItemNameChange(i: number, name: string) {
@@ -166,36 +194,67 @@ export function ReviewScreen({
           ? {
               ...it,
               name,
-              unit_price: prevPrice !== undefined && it.unit_price === 0 ? prevPrice : it.unit_price,
+              unit_price:
+                prevPrice !== undefined && it.unit_price === 0
+                  ? prevPrice
+                  : it.unit_price,
             }
-          : it
-      )
+          : it,
+      ),
     );
   }
 
   async function handleCreate() {
     setError(null);
-    if (busy) return;
-    if (customerMissing) return setError('Who is this bill for? Add a customer name.');
-    if (items.length === 0 || total <= 0) return setError('Add at least one item with a price.');
+    if (savingRef.current) return;
+    if (customerMissing)
+      return setError('Who is this bill for? Add a customer name.');
+    if (customerName.trim().split(/\s+/).length > 4)
+      return setError('Use a customer name of up to four words.');
+    if (
+      items.some(
+        (it) =>
+          !it.name.trim() ||
+          !Number.isFinite(it.quantity) ||
+          it.quantity <= 0 ||
+          !Number.isFinite(it.unit_price) ||
+          it.unit_price < 0,
+      )
+    )
+      return setError('Check each item name, quantity, and price.');
+    if (items.length === 0 || total <= 0)
+      return setError('Add at least one item with a price.');
     if (highPricedItem && !priceConfirmed) {
       return setError('Please confirm the high item price first.');
     }
 
+    savingRef.current = true;
     setBusy(true);
+    aiVersionRef.current++;
+    setAiPending(false);
     onPrefetchedBusiness(business);
-    const result = await createInvoice({
-      businessId: business.id,
-      customerId: null,
-      customerName,
-      customerPhone: null,
-      items,
-      advance: advanceNum,
-      notes,
-      existingCustomers: customers,
-    });
+    let result;
+    try {
+      result = await createInvoice({
+        requestId: requestIdRef.current,
+        businessId: business.id,
+        customerId: null,
+        customerName,
+        customerPhone: null,
+        items,
+        advance: advanceNum,
+        notes,
+        existingCustomers: customers,
+      });
+    } catch {
+      result = {
+        invoice: null,
+        error: 'Could not reach the database. Please try again.',
+      };
+    }
 
     if (result.error || !result.invoice) {
+      savingRef.current = false;
       setBusy(false);
       setError(result.error ?? 'Could not create the invoice.');
       return;
@@ -204,7 +263,7 @@ export function ReviewScreen({
     if (speakConfirmationsEnabled()) {
       speak(
         `Invoice for ${customerName.trim()}, ${Math.round(total)} rupees, added.`,
-        business.language
+        business.language,
       );
     }
     onCreated(result.invoice.id);
@@ -220,17 +279,23 @@ export function ReviewScreen({
         >
           <ArrowLeft size={20} />
         </button>
-        <h1 className="font-display font-bold text-xl text-ink mb-1">Review invoice</h1>
+        <h1 className="font-display font-bold text-xl text-ink mb-1">
+          Review invoice
+        </h1>
       </div>
       {aiPending && (
         <div className="mt-2 mb-4" role="status" aria-live="polite">
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-primary/10">
             <div className="h-full w-1/3 rounded-full bg-primary animate-pulse" />
           </div>
-          <p className="mt-1 text-xs text-muted">Checking for a better match…</p>
+          <p className="mt-1 text-xs text-muted">
+            Checking for a better match…
+          </p>
         </div>
       )}
-      <p className="text-sm text-muted mb-5">Check the details, then create it.</p>
+      <p className="text-sm text-muted mb-5">
+        Check the details, then create it.
+      </p>
 
       {transcriptEmpty ? (
         <Card className="p-4 mb-4">
@@ -238,7 +303,8 @@ export function ReviewScreen({
             <MicOff size={18} className="text-muted shrink-0 mt-0.5" />
             <div className="min-w-0">
               <p className="text-ink text-sm">
-                We didn't hear anything. Check mic permission or type it instead.
+                We didn't hear anything. Check mic permission or type it
+                instead.
               </p>
             </div>
           </div>
@@ -248,12 +314,12 @@ export function ReviewScreen({
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-medium text-muted flex items-center gap-1.5">
               You said:
-              {aiUsed && (
+              {aiUsed && !aiImproved && (
                 <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-lime/40 text-ink text-[11px] font-bold">
                   <Sparkles size={11} /> AI
                 </span>
               )}
-              {aiImproved && !aiUsed && (
+              {aiImproved && (
                 <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-lime/40 text-ink text-[11px] font-bold">
                   <Sparkles size={11} /> Improved with AI
                 </span>
@@ -265,7 +331,10 @@ export function ReviewScreen({
               disabled={reParsing || !saidText.trim()}
               className="min-h-[40px] px-3 rounded-full text-sm font-medium text-primary bg-primary-soft flex items-center gap-1.5 transition duration-200 hover:opacity-80 disabled:opacity-50"
             >
-              <RefreshCw size={14} className={reParsing ? 'animate-spin' : ''} />
+              <RefreshCw
+                size={14}
+                className={reParsing ? 'animate-spin' : ''}
+              />
               Re-read
             </button>
           </div>
@@ -281,7 +350,8 @@ export function ReviewScreen({
       {parsed.ok === false && !transcriptEmpty && (
         <Card className="p-4 mb-4 bg-amber/10 border-amber/40">
           <p className="text-sm text-ink">
-            We couldn't fully understand that. Fill in the details below or edit what you said and tap Re-read.
+            We couldn't fully understand that. Fill in the details below or edit
+            what you said and tap Re-read.
           </p>
         </Card>
       )}
@@ -292,8 +362,11 @@ export function ReviewScreen({
           label="Customer"
           placeholder="Customer name"
           value={customerName}
-          onChange={(e) => setCustomerName(e.target.value)}
-          error={customerMissing ? 'Customer name is required' : null}
+          onChange={(e) => {
+            trackEdit('customer');
+            setCustomerName(e.target.value);
+          }}
+          error={customerMissing ? 'Add the customer name' : null}
         />
         {suggestions.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-2">
@@ -301,7 +374,10 @@ export function ReviewScreen({
               <button
                 key={c.id}
                 type="button"
-                onClick={() => setCustomerName(c.name)}
+                onClick={() => {
+                  trackEdit('customer');
+                  setCustomerName(c.name);
+                }}
                 className="min-h-[36px] px-3 rounded-full bg-primary-soft text-primary text-sm font-medium transition duration-200 hover:opacity-80"
               >
                 {c.name}
@@ -325,7 +401,9 @@ export function ReviewScreen({
         {items.map((item, i) => (
           <Card key={i} className="p-4">
             <div className="flex items-center justify-between mb-3">
-              <span className="text-sm font-medium text-muted">Item {i + 1}</span>
+              <span className="text-sm font-medium text-muted">
+                Item {i + 1}
+              </span>
               <button
                 type="button"
                 onClick={() => removeItem(i)}
@@ -335,7 +413,7 @@ export function ReviewScreen({
                 <Trash2 size={17} />
               </button>
             </div>
-            <div className="grid grid-cols-[1fr_72px_92px] gap-2">
+            <div className="grid grid-cols-[minmax(0,1fr)_64px_80px] gap-2">
               <Input
                 placeholder="What did you sell?"
                 value={item.name}
@@ -347,7 +425,9 @@ export function ReviewScreen({
                 min="0"
                 placeholder="Qty"
                 value={item.quantity || ''}
-                onChange={(e) => updateItem(i, { quantity: parseFloat(e.target.value) || 0 })}
+                onChange={(e) =>
+                  updateItem(i, { quantity: parseFloat(e.target.value) || 0 })
+                }
               />
               <Input
                 type="number"
@@ -355,7 +435,9 @@ export function ReviewScreen({
                 min="0"
                 placeholder="₹"
                 value={item.unit_price || ''}
-                onChange={(e) => updateItem(i, { unit_price: parseFloat(e.target.value) || 0 })}
+                onChange={(e) =>
+                  updateItem(i, { unit_price: parseFloat(e.target.value) || 0 })
+                }
               />
             </div>
           </Card>
@@ -379,11 +461,16 @@ export function ReviewScreen({
           min="0"
           placeholder="0"
           value={advance}
-          onChange={(e) => setAdvance(e.target.value)}
+          onChange={(e) => {
+            trackEdit('advance');
+            setAdvance(e.target.value);
+          }}
         />
         <div className="flex items-center justify-between mt-4">
           <span className="text-muted">Total</span>
-          <span className="font-display font-bold text-ink">{formatINR(total)}</span>
+          <span className="font-display font-bold text-ink">
+            {formatINR(total)}
+          </span>
         </div>
         <div className="flex items-center justify-between mt-2">
           <span className="font-medium text-ink">Balance due</span>
@@ -396,7 +483,8 @@ export function ReviewScreen({
       {advanceTooBig && (
         <Card className="p-4 mt-4 bg-amber/10 border-amber/40">
           <p className="text-sm text-ink">
-            The advance ({formatINR(advanceNum)}) is more than the total ({formatINR(total)}). Check the amounts.
+            The advance ({formatINR(advanceNum)}) is more than the total (
+            {formatINR(total)}). Check the amounts.
           </p>
         </Card>
       )}
@@ -405,7 +493,9 @@ export function ReviewScreen({
         <Card className="p-4 mt-4 bg-amber/10 border-amber/40">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-sm font-medium text-ink">Is this price right?</p>
+              <p className="text-sm font-medium text-ink">
+                Is this price right?
+              </p>
               <p className="text-xs text-muted mt-0.5">
                 One or more items cost over 20,000 rupees.
               </p>
@@ -425,7 +515,10 @@ export function ReviewScreen({
       {/* Notes */}
       <textarea
         value={notes}
-        onChange={(e) => setNotes(e.target.value)}
+        onChange={(e) => {
+          trackEdit('notes');
+          setNotes(e.target.value);
+        }}
         rows={2}
         placeholder="Notes (optional)"
         className="w-full mt-4 p-4 rounded-2xl border border-line bg-card text-ink placeholder:text-muted/60 focus:outline-none focus:border-primary transition duration-200 resize-none"
@@ -435,7 +528,11 @@ export function ReviewScreen({
 
       {/* Saving overlay: animated logo pulse, all buttons disabled */}
       {busy && (
-        <div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex flex-col items-center justify-center gap-4" role="status" aria-live="polite">
+        <div
+          className="mt-4 rounded-2xl bg-primary-soft p-4 flex items-center justify-center gap-3"
+          role="status"
+          aria-live="polite"
+        >
           <span className="animate-pulse">
             <BoloLogo size="lg" />
           </span>
@@ -449,7 +546,12 @@ export function ReviewScreen({
       {/* Sticky create button */}
       <div className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur border-t border-line pb-safe">
         <div className="md:max-w-md md:mx-auto px-5 py-3">
-          <Button className="w-full" loading={busy} disabled={customerMissing} onClick={handleCreate}>
+          <Button
+            className="w-full"
+            loading={busy}
+            disabled={customerMissing}
+            onClick={handleCreate}
+          >
             Create invoice · {formatINR(total)}
           </Button>
         </div>

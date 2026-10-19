@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Upload, Volume2, VolumeX, Mic, Loader2, Play, AlertCircle } from 'lucide-react';
+import {
+  ArrowLeft,
+  Upload,
+  Volume2,
+  VolumeX,
+  Mic,
+  Loader2,
+  Play,
+  AlertCircle,
+} from 'lucide-react';
 import type { Business, Language } from '@/lib/types';
 import { supabase } from '@/lib/supabase';
 import { useDemoData } from '@/hooks/useDemoData';
@@ -10,8 +19,24 @@ import { LanguagePicker } from '@/components/LanguagePicker';
 import { MicLevelMeter } from '@/components/MicLevelMeter';
 import { useToast } from '@/components/ui/Toast';
 import { isValidUpiId } from '@/lib/upi';
+import { speakReplyDetailed, stopPlayback } from '@/lib/geminiVoice';
+import { runBackgroundAI } from '@/lib/parser';
+import { parseWithRules } from '@/lib/parserRules';
+import { getAccessToken } from '@/lib/converse';
+import {
+  speakRepliesEnabled,
+  setSpeakReplies,
+  geminiVoiceEnabled,
+  setGeminiVoice,
+} from '@/lib/voiceFeedback';
 import { startMicTest } from '@/lib/audioInput';
-import { setMicOpen, speakConfirmationsEnabled, setSpeakConfirmations, talkModeEnabled, setTalkMode } from '@/lib/voiceFeedback';
+import {
+  setMicOpen,
+  speakConfirmationsEnabled,
+  setSpeakConfirmations,
+  talkModeEnabled,
+  setTalkMode,
+} from '@/lib/voiceFeedback';
 
 export function SettingsScreen({
   business,
@@ -31,21 +56,57 @@ export function SettingsScreen({
   const { loadDemoData, inserting, error: demoError } = useDemoData();
   const toast = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [replyOn, setReplyOn] = useState(speakRepliesEnabled);
+  const [geminiOn, setGeminiOn] = useState(geminiVoiceEnabled);
+  const [voiceStatus, setVoiceStatus] = useState('');
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [testText, setTestText] = useState(
+    'Ravi Kumar, 3 shirts 200 each, 1 alteration 150, advance 300',
+  );
+  const [understanding, setUnderstanding] = useState('');
+  const [understandingBusy, setUnderstandingBusy] = useState(false);
+  const [healthBusy, setHealthBusy] = useState(false);
+  const [health, setHealth] = useState<
+    { name: string; ok: boolean; reason: string }[]
+  >([]);
+  const [isDemo, setIsDemo] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const disposedRef = useRef(false);
+  const micHandleRef = useRef<{ stop: () => void } | null>(null);
+  useEffect(() => {
+    void supabase.auth
+      .getUser()
+      .then(({ data }) => setIsDemo(data.user?.email === 'demo@bolo.app'));
+  }, []);
   const [speakOn, setSpeakOn] = useState(() => speakConfirmationsEnabled());
   const [talkModeOn, setTalkModeOn] = useState(() => talkModeEnabled());
-  const [micTestState, setMicTestState] = useState<'idle' | 'recording' | 'ready' | 'playing' | 'error'>('idle');
+  const [micTestState, setMicTestState] = useState<
+    'idle' | 'recording' | 'ready' | 'playing' | 'error'
+  >('idle');
   const [micTestError, setMicTestError] = useState<string | null>(null);
   const [micTestStream, setMicTestStream] = useState<MediaStream | null>(null);
   const micTestAudioRef = useRef<HTMLAudioElement | null>(null);
   const micTestUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
+    disposedRef.current = false;
+    const stop = () => {
+      stopPlayback();
+      micHandleRef.current?.stop();
+      setMicOpen(false);
+      micTestAudioRef.current?.pause();
+    };
+    const visibility = () => {
+      if (document.hidden) stop();
+    };
+    window.addEventListener('pagehide', stop);
+    document.addEventListener('visibilitychange', visibility);
     return () => {
+      disposedRef.current = true;
+      stop();
       if (micTestUrlRef.current) URL.revokeObjectURL(micTestUrlRef.current);
-      if (micTestAudioRef.current) {
-        micTestAudioRef.current.pause();
-        micTestAudioRef.current = null;
-      }
+      window.removeEventListener('pagehide', stop);
+      document.removeEventListener('visibilitychange', visibility);
     };
   }, []);
 
@@ -66,25 +127,44 @@ export function SettingsScreen({
       URL.revokeObjectURL(micTestUrlRef.current);
       micTestUrlRef.current = null;
     }
+    stopPlayback();
+    setMicOpen(true);
     setMicTestState('recording');
     const handle = await startMicTest(
       3000,
       {
         onFinish: (blob) => {
+          setMicOpen(false);
+          if (disposedRef.current) return;
           setMicTestStream(null);
           const url = URL.createObjectURL(blob);
           micTestUrlRef.current = url;
           setMicTestState('ready');
         },
         onError: () => {
+          setMicOpen(false);
+          if (disposedRef.current) return;
           setMicTestStream(null);
           setMicTestState('error');
-          setMicTestError('Microphone blocked, tap the lock icon in the address bar and allow it');
+          setMicTestError(
+            'Microphone blocked, tap the lock icon in the address bar and allow it',
+          );
         },
       },
-      (stream) => setMicTestStream(stream)
+      (stream) => {
+        if (disposedRef.current) stream.getTracks().forEach((t) => t.stop());
+        else setMicTestStream(stream);
+      },
     );
-    if (!handle) setMicTestState('error');
+    if (disposedRef.current) {
+      handle?.stop();
+      return;
+    }
+    micHandleRef.current = handle;
+    if (!handle) {
+      setMicOpen(false);
+      setMicTestState('error');
+    }
   }
 
   useEffect(() => {
@@ -146,7 +226,9 @@ export function SettingsScreen({
       toast('error', 'Could not upload the QR image.');
       return;
     }
-    const { data: urlData } = supabase.storage.from('payment-qr').getPublicUrl(path);
+    const { data: urlData } = supabase.storage
+      .from('payment-qr')
+      .getPublicUrl(path);
     const { error: dbErr } = await supabase
       .from('businesses')
       .update({ qr_image_url: urlData.publicUrl })
@@ -171,6 +253,104 @@ export function SettingsScreen({
       toast('success', 'Demo data loaded.');
     } else {
       toast('error', demoError ?? 'Could not load demo data.');
+    }
+  }
+
+  async function handleCheckAI() {
+    if (healthBusy) return;
+    setHealthBusy(true);
+    setHealth([]);
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 6500);
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error('Sign in first.');
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-health`,
+        {
+          method: 'POST',
+          signal: abort.signal,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        },
+      );
+      const data = await res.json();
+      if (!res.ok)
+        throw new Error(data.error || 'Deploy ai-health through Bolt first.');
+      setHealth(data.providers || []);
+    } catch (e) {
+      setHealth([
+        {
+          name: 'AI check',
+          ok: false,
+          reason:
+            e instanceof Error && e.name !== 'AbortError'
+              ? e.message
+              : 'AI check timed out. Verify deployed functions and Bolt secrets.',
+        },
+      ]);
+    } finally {
+      clearTimeout(timer);
+      setHealthBusy(false);
+    }
+  }
+  async function handleUnderstanding() {
+    if (understandingBusy || !testText.trim()) return;
+    setUnderstandingBusy(true);
+    try {
+      const ai = await runBackgroundAI(testText, language);
+      const parsed = ai || parseWithRules(testText, language);
+      const total = parsed.items.reduce(
+        (s, i) => s + i.quantity * i.unit_price,
+        0,
+      );
+      setUnderstanding(
+        `${ai ? 'AI understood' : 'Rules result (AI unavailable)'}\nCustomer: ${parsed.customer || 'Add the customer name'}\n${parsed.items.map((i) => `${i.quantity} × ${i.name} at ₹${i.unit_price}`).join('\n')}\nTotal: ₹${total} · Advance: ₹${parsed.advance} · Balance: ₹${Math.max(0, total - parsed.advance)}`,
+      );
+    } finally {
+      setUnderstandingBusy(false);
+    }
+  }
+  async function handleTestVoice() {
+    if (voiceBusy) {
+      stopPlayback();
+      setVoiceBusy(false);
+      return;
+    }
+    setVoiceBusy(true);
+    setVoiceStatus('Preparing a voice sample. You can stop it at any time.');
+    const text =
+      language === 'hi'
+        ? 'नमस्ते, मैं बोलो हूँ। आपका बिल तैयार है।'
+        : language === 'te'
+          ? 'నమస్కారం, నేను బోలో. మీ బిల్లు సిద్ధంగా ఉంది.'
+          : 'Hello, I am Bolo. Your invoice is ready.';
+    try {
+      const result = await speakReplyDetailed(text, language, geminiOn);
+      setVoiceStatus(result.reason);
+    } finally {
+      setVoiceBusy(false);
+    }
+  }
+  async function handleResetDemo() {
+    if (!isDemo || resetBusy) return;
+    setResetBusy(true);
+    const { error } = await supabase.rpc('reset_demo_data', {
+      p_business_id: business.id,
+    });
+    setResetBusy(false);
+    if (error)
+      toast(
+        'error',
+        'Could not reset demo. Apply the P0 Bolt migration first.',
+      );
+    else {
+      toast('success', 'Demo values cleared.');
+      window.location.reload();
     }
   }
 
@@ -205,7 +385,11 @@ export function SettingsScreen({
             value={upiId}
             onChange={(e) => setUpiId(e.target.value)}
             required
-            error={upiId && !isValidUpiId(upiId) ? 'Enter a valid UPI ID, e.g. name@upi' : null}
+            error={
+              upiId && !isValidUpiId(upiId)
+                ? 'Enter a valid UPI ID, e.g. name@upi'
+                : null
+            }
           />
           <Input
             label="WhatsApp Number"
@@ -214,7 +398,9 @@ export function SettingsScreen({
             onChange={(e) => setPhone(e.target.value)}
           />
           <div>
-            <span className="block text-sm font-medium text-ink mb-2">Language</span>
+            <span className="block text-sm font-medium text-ink mb-2">
+              Language
+            </span>
             <LanguagePicker value={language} onChange={setLanguage} />
             <p className="text-xs text-muted mt-2">
               Used for voice recognition and reminders only.
@@ -227,9 +413,12 @@ export function SettingsScreen({
       </Card>
 
       <Card className="p-5 mt-4">
-        <h2 className="font-display font-bold text-ink">Your payment QR image</h2>
+        <h2 className="font-display font-bold text-ink">
+          Your payment QR image
+        </h2>
         <p className="text-sm text-muted mt-1 mb-4">
-          Optional. If the automatic QR ever fails, customers see this image instead.
+          Optional. If the automatic QR ever fails, customers see this image
+          instead.
         </p>
         {business.qr_image_url && (
           <div className="mb-4 flex justify-center">
@@ -247,9 +436,106 @@ export function SettingsScreen({
           className="hidden"
           onChange={handleQrUpload}
         />
-        <Button variant="outline" className="w-full" onClick={() => fileInputRef.current?.click()}>
-          <Upload size={18} className="text-primary" /> Upload your own payment QR image
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <Upload size={18} className="text-primary" /> Upload your own payment
+          QR image
         </Button>
+      </Card>
+
+      <Card className="p-5 mt-4 space-y-3">
+        <h2 className="font-display font-bold text-ink">AI and reply voice</h2>
+        <p className="text-sm text-muted">
+          Speech input uses your browser. AI understands the text; reply audio
+          uses the voice you choose below.
+        </p>
+        <Button
+          variant="outline"
+          className="w-full"
+          disabled={healthBusy}
+          onClick={handleCheckAI}
+        >
+          {healthBusy ? 'Checking AI…' : 'Check AI'}
+        </Button>
+        {health.map((p) => (
+          <p
+            key={p.name}
+            className={`text-sm ${p.ok ? 'text-primary' : 'text-danger'}`}
+          >
+            {p.ok ? '✓' : '✕'} {p.name}: {p.reason}
+          </p>
+        ))}
+        <label className="flex gap-3 items-center min-h-[48px]">
+          <input
+            type="checkbox"
+            checked={replyOn}
+            onChange={(e) => {
+              setReplyOn(e.target.checked);
+              setSpeakReplies(e.target.checked);
+              if (!e.target.checked) stopPlayback();
+            }}
+          />
+          <Volume2 size={18} /> Speak replies
+        </label>
+        <div className="flex gap-2">
+          <button
+            className={`min-h-[48px] flex-1 rounded-full border ${!geminiOn ? 'bg-primary text-white' : 'border-line'}`}
+            onClick={() => {
+              setGeminiOn(false);
+              setGeminiVoice(false);
+            }}
+          >
+            Device voice
+          </button>
+          <button
+            className={`min-h-[48px] flex-1 rounded-full border ${geminiOn ? 'bg-primary text-white' : 'border-line'}`}
+            onClick={() => {
+              setGeminiOn(true);
+              setGeminiVoice(true);
+            }}
+          >
+            Gemini voice
+          </button>
+        </div>
+        <p className="text-xs text-muted">
+          Gemini voice needs the deployed speak-reply function and a Gemini key
+          in Bolt. Device voice is the default; if Gemini is unavailable, the
+          reply remains visible and device voice is tried.
+        </p>
+        <Button variant="outline" className="w-full" onClick={handleTestVoice}>
+          {voiceBusy ? 'Stop voice test' : 'Test voice'}
+        </Button>
+        {voiceStatus && (
+          <p className="text-sm text-muted" role="status">
+            {voiceStatus}
+          </p>
+        )}
+        <label className="block text-sm font-medium">
+          Test understanding
+          <textarea
+            aria-label="Test understanding text"
+            value={testText}
+            onChange={(e) => setTestText(e.target.value)}
+            className="mt-2 w-full p-3 border border-line rounded-2xl bg-background"
+            rows={3}
+          />
+        </label>
+        <Button
+          variant="outline"
+          className="w-full"
+          disabled={understandingBusy || !testText.trim()}
+          onClick={handleUnderstanding}
+        >
+          {understandingBusy ? 'Testing understanding…' : 'Test understanding'}
+        </Button>
+        {understanding && (
+          <p className="whitespace-pre-wrap text-sm text-ink" role="status">
+            {understanding}
+          </p>
+        )}
       </Card>
 
       <Card className="p-5 mt-4">
@@ -260,7 +546,9 @@ export function SettingsScreen({
         {micTestState === 'recording' && micTestStream && (
           <div className="mb-4">
             <MicLevelMeter stream={micTestStream} active />
-            <p className="text-xs text-muted text-center mt-1">Recording… speak now</p>
+            <p className="text-xs text-muted text-center mt-1">
+              Recording… speak now
+            </p>
           </div>
         )}
         {micTestError && (
@@ -277,11 +565,13 @@ export function SettingsScreen({
         >
           {micTestState === 'recording' ? (
             <>
-              <Loader2 size={18} className="animate-spin text-primary" /> Recording…
+              <Loader2 size={18} className="animate-spin text-primary" />{' '}
+              Recording…
             </>
           ) : micTestState === 'playing' ? (
             <>
-              <Loader2 size={18} className="animate-spin text-primary" /> Playing…
+              <Loader2 size={18} className="animate-spin text-primary" />{' '}
+              Playing…
             </>
           ) : micTestState === 'ready' ? (
             <>
@@ -337,8 +627,8 @@ export function SettingsScreen({
           <div className="min-w-0">
             <h2 className="font-display font-bold text-ink">Talk mode</h2>
             <p className="text-sm text-muted mt-1">
-              Turn-based conversation where Bolo asks questions. Off by default —
-              when off, the single-sentence voice flow is the default.
+              Turn-based conversation where Bolo asks questions. Off by default
+              — when off, the single-sentence voice flow is the default.
             </p>
           </div>
           <button
@@ -365,6 +655,23 @@ export function SettingsScreen({
 
       <Card className="p-5 mt-4">
         <h2 className="font-display font-bold text-ink">Demo data</h2>
+        {isDemo && (
+          <>
+            <p className="text-sm text-muted mt-2">
+              Clear the sample customers and invoices in this shared demo
+              account. The demo business details are reset too. Add a UPI ID
+              before testing payment QR codes.
+            </p>
+            <Button
+              variant="outline"
+              className="w-full mt-3 mb-3"
+              disabled={resetBusy}
+              onClick={handleResetDemo}
+            >
+              {resetBusy ? 'Clearing demo…' : 'Clear demo values'}
+            </Button>
+          </>
+        )}
         <p className="text-sm text-muted mt-1 mb-4">
           Adds 6 sample customers and 12 invoices so you can explore the app.
         </p>
@@ -394,7 +701,9 @@ export function SettingsScreen({
           aria-modal="true"
         >
           <Card className="w-full max-w-sm p-6">
-            <h2 className="font-display font-bold text-lg text-ink">Sign out?</h2>
+            <h2 className="font-display font-bold text-lg text-ink">
+              Sign out?
+            </h2>
             <p className="text-muted text-sm mt-1 mb-5">
               You can sign back in anytime with your email and password.
             </p>
@@ -406,7 +715,11 @@ export function SettingsScreen({
               >
                 Cancel
               </Button>
-              <Button variant="danger" className="flex-1" onClick={handleSignOut}>
+              <Button
+                variant="danger"
+                className="flex-1"
+                onClick={handleSignOut}
+              >
                 Sign Out
               </Button>
             </div>
