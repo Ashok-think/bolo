@@ -19,7 +19,7 @@ const DAILY_LIMIT = 120;
 const MAX_TURNS = 6;
 const MAX_ITEMS = 30;
 
-const SYSTEM_PROMPT = `You are Bolo, a friendly billing assistant for a small shopkeeper. You are in a natural voice conversation. The user dictates invoice details in pieces, in English, Hindi, Telugu, or a mix with English (romanized included). The user message gives you langName, the current draft, the last few conversation turns, and the new utterance.
+const SYSTEM_PROMPT = `You are Bolo, a friendly billing assistant for a small shopkeeper. You are in a natural voice conversation. The user dictates invoice details in pieces, in the language named by langName or a mix with English (romanized speech included). The user message gives you langName, the current draft, the last few conversation turns, and the new utterance.
 
 Merge the utterance into the draft. NEVER invent customers, items or prices; only use what the user actually said. If the utterance corrects an earlier detail, apply the correction.
 
@@ -51,7 +51,7 @@ Rules for the reply:
 - Do not mention JSON, drafts, or fields. Sound like a helpful shop assistant.
 - When customer and at least one item with a price exist, set ready=true and ask "Anything else, or shall I create it?" (in the user's language).
 - If the utterance sounds like "that's all / yes create it / bas / ho gaya / ayipoyindi / yes / create it", do not add anything; set ready=true and make the reply a read-back: "<customer>, total <total>, advance <advance>, balance <balance>. Creating it now." in the user's language.
-- Reply in the same language the user spoke: English, Hindi, or Telugu.`;
+- Reply in the language named by langName. Accept and understand romanized and native-script words, preserve customer and item names, and never translate names into other words.`;
 
 interface DraftItem {
   name: string;
