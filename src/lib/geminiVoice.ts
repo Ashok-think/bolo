@@ -118,7 +118,7 @@ export async function speakReplyDetailed(
           timer = setTimeout(() => {
             abort.abort();
             resolve(null);
-          }, 8000);
+          }, 12000);
         }),
       ]);
       if (result) {

@@ -14,7 +14,7 @@ Do not import a ZIP or create a new Bolt project. Keep https://bolt.new/~/sb1-sn
    The second adds a nullable request-ID column, a unique partial index and `create_invoice_batched_v2`. It preserves the original invoice RPC and all existing rows so the currently published client continues working. It does not backfill data.
 3. Apply only the reviewed additive definitions. If the database differs or a migration is already applied, stop and report rather than modifying old records or dropping functions.
 4. Deploy exactly these four server functions with their `_shared` imports: `parse-invoice`, `converse`, `speak-reply`, `ai-health`.
-5. Enter secrets in Bolt's server-function secrets settings, never in chat or GitHub: `GEMINI_API_KEY`; optional `GEMINI_MODEL` (default `gemini-2.5-flash`) and `GEMINI_TTS_MODEL` (default `gemini-2.5-flash-preview-tts`). Optional fallback: `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`. Bolt supplies server `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Keep only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in frontend configuration.
+5. Enter secrets in Bolt's server-function secrets settings, never in chat or GitHub: `GEMINI_API_KEY`; optional `GEMINI_MODEL` (default `gemini-3.8-flash`) and `GEMINI_TTS_MODEL` (default `gemini-3.8-flash-lite-tts`). Optional fallback: `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`. Bolt supplies server `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Keep only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in frontend configuration.
 6. Run `npm install`, `npm test`, `npm run test:parser`, `npm run typecheck`, `npm run build`, and the SQL check from CI. Report anything unverified.
 7. In preview, run Settings → Check AI (at least one provider green), then Test understanding with English, Hindi, Telugu and mixed acceptance sentences. Check customer, quantities, unit prices, totals and balance.
 8. Test a two-second speaking pause, immediate Review, invoice creation and QR on invoice/public link, and Talk to Bolo without the app hearing its own reply. A real microphone and phone require manual testing; CI cannot verify them.
@@ -49,5 +49,9 @@ Current Google reference pages checked while implementing:
 - Normal speech parsing and Talk to Bolo: Gemini first, then the configured OpenAI-compatible provider.
 - Review → Re-read: compatible provider directly, using the existing AI_BASE_URL / AI_API_KEY / AI_MODEL. It receives browser transcript TEXT only.
 - Qwen3.8 Omni text support uses `modalities: ["text"]`, JSON mode, `reasoning_effort: "none"`, and non-streamed responses. Set `AI_MODEL=qwen3.8-omni-flash` only when your provider actually serves that exact ID; do not overwrite a working model on an unverified proxy.
-- Reply voice is separate: GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts. This model-name setting does not fix a Gemini 429 quota response. Device voice remains the fallback/default.
+- Reply voice is separate: GEMINI_TTS_MODEL=gemini-3.8-flash-lite-tts. This model-name setting does not fix a Gemini 429 quota response. Device voice remains the fallback/default.
 - This update requires redeploying `parse-invoice` and `converse` with `_shared/providerChain.ts` after syncing source. No new migrations. Do not claim the routing change is live until deployed and tested.
+
+## Current Gemini compatibility
+
+New keys may not have access to legacy 2.5 models. Set GEMINI_MODEL=gemini-3.8-flash and GEMINI_TTS_MODEL=gemini-3.8-flash-lite-tts in server secrets. Gemini 3.8 Flash supports low/medium/high thinking, not minimal. The TTS helper uses Interactions, speech metadata and explicit 24kHz audio/l16 to keep the existing player valid. The diagnostic health timeout is 10 seconds; invoice parsing remains capped at 5 seconds. Optional voice generation has a 12-second client limit including authentication/network; device voice remains the fallback. Deploy all four server functions with shared imports after this source update. No migrations.

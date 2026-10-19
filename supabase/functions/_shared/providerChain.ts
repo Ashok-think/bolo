@@ -13,7 +13,7 @@ export function buildProviderChain(): ProviderConfig[] {
       name: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
       apiKey: key,
-      model: Deno.env.get('GEMINI_MODEL') || 'gemini-2.5-flash',
+      model: Deno.env.get('GEMINI_MODEL') || 'gemini-3.8-flash',
       supportsReasoningEffort: false,
     });
   const apiKey = Deno.env.get('AI_API_KEY'),
@@ -86,7 +86,7 @@ export async function callProviderChain<T>(
         const thinkingConfig = /^gemini-2\.5/.test(model)
           ? { thinkingBudget: /pro/.test(model) ? 128 : 0 }
           : /^gemini-[34]/.test(model)
-            ? { thinkingLevel: /flash/.test(model) ? 'minimal' : 'low' }
+            ? { thinkingLevel: 'low' }
             : undefined;
         request = {
           systemInstruction: {
@@ -137,7 +137,7 @@ export async function callProviderChain<T>(
               ? 'API key or permission rejected'
               : response.status === 404
                 ? 'Model unavailable'
-                : 'Provider request failed';
+                : `Provider request failed (HTTP ${response.status})`;
         continue;
       }
       const payload = await response.json();
