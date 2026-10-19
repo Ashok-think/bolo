@@ -12,6 +12,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pglast==7.21
+      - run: python scripts/check_p0_sql.py
       - run: npm ci
       - run: npm test
       - run: npm run test:parser
