@@ -9,15 +9,15 @@ import { InvoiceDetailScreen } from '@/screens/InvoiceDetailScreen';
 import { CustomerDetailScreen } from '@/screens/CustomerDetailScreen';
 import { VoiceSheet } from '@/components/VoiceSheet';
 import { TalkSheet } from '@/components/TalkSheet';
-import { parseInvoiceTextInstant } from '@/lib/parser';
 import type { ParsedInvoice } from '@/lib/parser';
+import { parseWithRules } from '@/lib/parserRules';
 import { useCustomers } from '@/hooks/useCustomers';
 import { stopSpeaking } from '@/lib/voiceFeedback';
 
 type Tab = 'home' | 'customers' | 'settings';
 type View =
   | { name: 'tabs' }
-  | { name: 'review'; parsed: ParsedInvoice; transcript: string }
+  | { name: 'review'; parsed: ParsedInvoice; transcript: string; lang: Language }
   | { name: 'invoice'; id: string }
   | { name: 'customer'; id: string }
   | { name: 'settings' };
@@ -31,18 +31,17 @@ export function AppShell({ business: initialBusiness }: { business: Business }) 
   const [billQueue, setBillQueue] = useState<ParsedInvoice[]>([]);
   const { customers } = useCustomers(business.id);
 
-  async function handleParsed(transcript: string, lang: Language) {
+  function handleParsed(transcript: string, lang: Language) {
     setVoiceOpen(false);
-    // Instant rule-based parse; AI attempt runs inside the Review screen.
-    const parsed = await parseInvoiceTextInstant(transcript, lang);
-    setView({ name: 'review', parsed, transcript });
+    const parsed: ParsedInvoice = { ...parseWithRules(transcript, lang), source: 'rules' };
+    setView({ name: 'review', parsed, transcript, lang });
   }
 
-  function handleTalkCompleted(parsedList: ParsedInvoice[], transcript: string) {
+  function handleTalkCompleted(parsedList: ParsedInvoice[], transcript: string, lang: Language) {
     setTalkOpen(false);
     const [first, ...rest] = parsedList;
     setBillQueue(rest);
-    setView({ name: 'review', parsed: first, transcript });
+    setView({ name: 'review', parsed: first, transcript, lang });
   }
 
   function handleCreated(invoiceId: string) {
@@ -51,7 +50,7 @@ export function AppShell({ business: initialBusiness }: { business: Business }) 
     if (billQueue.length > 0) {
       const [next, ...rest] = billQueue;
       setBillQueue(rest);
-      setView({ name: 'review', parsed: next, transcript: '' });
+      setView({ name: 'review', parsed: next, transcript: '', lang: view.name === 'review' ? view.lang : business.language });
       return;
     }
     setView({ name: 'invoice', id: invoiceId });
@@ -83,6 +82,7 @@ export function AppShell({ business: initialBusiness }: { business: Business }) 
               customers={customers}
               parsed={view.parsed}
               transcript={view.transcript}
+              lang={view.lang}
               onCreated={handleCreated}
               onPrefetchedBusiness={setBusiness}
               onBack={() => setView({ name: 'tabs' })}
