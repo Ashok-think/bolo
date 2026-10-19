@@ -57,7 +57,8 @@ export async function converseTurn(
   utterance: string,
   history: ConversationTurn[],
   lang: Language,
-  knownCustomers: string[]
+  knownCustomers: string[],
+  signal?: AbortSignal
 ): Promise<ConverseResult> {
   try {
     const token = await getAccessToken();
@@ -66,6 +67,7 @@ export async function converseTurn(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/converse`,
         {
           method: 'POST',
+          signal,
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
@@ -99,68 +101,7 @@ export async function converseTurn(
   } catch {
     // fall through to rules
   }
-  return ruleBasedTurn(draft, utterance, lang);
-}
-
-function blobToBase64(blob: Blob): Promise<string | null> {
-  return new Promise((resolve) => {
-    try {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result;
-        if (typeof result !== 'string') return resolve(null);
-        const comma = result.indexOf(',');
-        resolve(comma >= 0 ? result.slice(comma + 1) : null);
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    } catch {
-      resolve(null);
-    }
-  });
-}
-
-export type TranscribeResult =
-  | { ok: true; text: string }
-  | { ok: false; code: 'offline' | 'ai' | 'auth' };
-
-/**
- * Send a voice recording to the transcribe-audio edge function (Gemini's
- * audio understanding) and resolve the transcript in the language actually
- * spoken. Resolves a failure code on any error so the caller can show the
- * real reason.
- */
-export async function transcribeAudio(blob: Blob, lang: Language): Promise<TranscribeResult> {
-  try {
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-      return { ok: false, code: 'offline' };
-    }
-    const token = await getAccessToken();
-    if (!token) return { ok: false, code: 'auth' };
-    const audio = await blobToBase64(blob);
-    if (!audio || audio.length > 8_000_000) return { ok: false, code: 'ai' };
-    const response = await fetch(
-      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/transcribe-audio`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-          Apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({ audio, mime: blob.type || 'audio/wav', lang }),
-      }
-    );
-    if (!response.ok) return { ok: false, code: 'ai' };
-    const data = (await response.json().catch(() => null)) as { text?: unknown } | null;
-    const text = typeof data?.text === 'string' ? data.text.trim() : '';
-    return text ? { ok: true, text } : { ok: false, code: 'ai' };
-  } catch (e) {
-    // A thrown fetch is a network failure; a timeout abort is more likely
-    // the AI being slow, which is retryable the same way.
-    const aborted = e instanceof DOMException && e.name === 'AbortError';
-    return { ok: false, code: aborted ? 'ai' : 'offline' };
-  }
+  return ruleBasedTurn(draft, utterance, lang, knownCustomers);
 }
 
 // --- Rule-based fallback ---------------------------------------------------
@@ -202,13 +143,14 @@ function cannedFor(lang: Language, key: 'ask-customer' | 'ask-item' | 'ask-price
   return row[lang] ?? row.en ?? 'Could you say that again?';
 }
 
-function ruleBasedTurn(
+export function ruleBasedTurn(
   prev: ConversationDraft,
   utterance: string,
-  lang: Language
+  lang: Language,
+  knownCustomers: string[] = []
 ): ConverseResult {
   const text = utterance.toLowerCase();
-  const parsed = parseWithRules(utterance, lang);
+  const parsed = parseWithRules(utterance, lang, knownCustomers);
 
   const draft: ConversationDraft = {
     ...prev,
