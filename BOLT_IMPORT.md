@@ -32,7 +32,7 @@ Do not import a ZIP or create a new Bolt project. Keep https://bolt.new/~/sb1-sn
 - Talk to Bolo shows a usable rule draft immediately, then uses the AI's actual reply when available. A new mic tap can interrupt AI/playback rather than leave the controls stuck on Paused. Reply voice and listening never run together.
 - Invoice saving remains one transactional RPC, with a synchronous double-submit guard and a reusable request ID. The migration locks business numbering and verifies customer ownership and item values.
 - Payment QR uses `qrcode`, 480px PNG generation, a 240px white frame, skeleton/error states, Copy UPI link and Pay with UPI. Paid/missing-UPI states are explicit. WhatsApp links use the actual Bolt site's `/i/:token` route.
-- AI parsing uses Gemini's native generateContent API with a JSON schema and low/disabled thinking where supported; fallback runs inside the shared four-second provider budget. The client still stops waiting at five seconds. Limits reserve attempts atomically: 40 per user/day, 1,000 globally/day, shared by AI operations (including voice tests). Failed attempts count toward the limit.
+- Normal parsing and Talk use Gemini first, then the compatible API. An explicit Review Re-read selects the compatible API directly within the same five-second deadline. AI parsing uses Gemini's native generateContent API with a JSON schema and low/disabled thinking where supported; fallback runs inside the shared four-second provider budget. The client still stops waiting at five seconds. Limits reserve attempts atomically: 40 per user/day, 1,000 globally/day, shared by AI operations (including voice tests). Failed attempts count toward the limit.
 
 ## Validation and remaining gates
 
@@ -43,3 +43,11 @@ Current Google reference pages checked while implementing:
 - https://ai.google.dev/gemini-api/docs/generate-content/thinking
 - https://ai.google.dev/gemini-api/docs/generate-content/speech-generation
 - https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-preview-tts
+
+## Provider routing correction (source update)
+
+- Normal speech parsing and Talk to Bolo: Gemini first, then the configured OpenAI-compatible provider.
+- Review → Re-read: compatible provider directly, using the existing AI_BASE_URL / AI_API_KEY / AI_MODEL. It receives browser transcript TEXT only.
+- Qwen3.8 Omni text support uses `modalities: ["text"]`, JSON mode, `reasoning_effort: "none"`, and non-streamed responses. Set `AI_MODEL=qwen3.8-omni-flash` only when your provider actually serves that exact ID; do not overwrite a working model on an unverified proxy.
+- Reply voice is separate: GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts. This model-name setting does not fix a Gemini 429 quota response. Device voice remains the fallback/default.
+- This update requires redeploying `parse-invoice` and `converse` with `_shared/providerChain.ts` after syncing source. No new migrations. Do not claim the routing change is live until deployed and tested.

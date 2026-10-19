@@ -78,7 +78,7 @@ export function ReviewScreen({
   // Background AI: quietly fills fields the user hasn't touched, then shows
   // the "Improved with AI" chip. Any failure is silent. The AI window is
   // bounded; whichever provider answers first inside it wins.
-  async function improve(text: string) {
+  async function improve(text: string, compatibleOnly = false) {
     const version = ++aiVersionRef.current;
     setAiPending(true);
     try {
@@ -87,6 +87,7 @@ export function ReviewScreen({
         lang,
         customers.map((c) => c.name),
         AI_TIMEOUT_MS,
+        compatibleOnly ? 'openai-compatible' : 'auto',
       );
       if (version !== aiVersionRef.current || !ai) return;
       const edited = userEditedRef.current;
@@ -182,7 +183,7 @@ export function ReviewScreen({
     setItems(result.items.map((it) => ({ ...it })));
     setAdvance(result.advance ? String(result.advance) : '');
     setNotes(result.notes);
-    void improve(text);
+    void improve(text, true);
   }
 
   function handleItemNameChange(i: number, name: string) {

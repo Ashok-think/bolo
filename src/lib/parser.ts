@@ -91,6 +91,7 @@ export async function runBackgroundAI(
   lang: Language = 'en',
   knownCustomers: string[] = [],
   timeoutMs: number = AI_TIMEOUT_MS,
+  providerPreference: 'auto' | 'openai-compatible' = 'auto',
 ): Promise<ParsedInvoice | null> {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -118,6 +119,7 @@ export async function runBackgroundAI(
             lang,
             langName: LANGUAGE_NAMES[lang],
             knownCustomers,
+            providerPreference,
           }),
         },
       );

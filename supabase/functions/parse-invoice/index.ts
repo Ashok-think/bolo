@@ -6,11 +6,11 @@ import {
   validateInvoice,
 } from '../_shared/ai.ts';
 import {
-  buildProviderChain,
+  buildTextProviderChain,
   callProviderChain,
 } from '../_shared/providerChain.ts';
 const prompt =
-  'Extract only the invoice facts explicitly spoken by the user in any Indian language, English, or mixed/romanized speech. Return customer (at most four words; empty if absent), items [{name,quantity,unit_price}], advance, notes. Never invent a customer, price, or item. Ignore fillers such as so, got, ki, ke liye. Understand Indian number grouping, Hindi and Telugu spoken numbers including डेढ़ सौ=150 and రెండు వందలు=200. Price per item and quantity are separate. Preserve proper names. If one book costs 500 and the customer buys 30, quantity is 30 and unit_price is 500. Match knownCustomers only when the name was actually spoken.';
+  'Extract only the invoice facts explicitly spoken by the user in any Indian language, English, or mixed/romanized speech. Return customer (at most four words; empty if absent), items [{name,quantity,unit_price}], advance, notes. Never invent a customer, price, or item. Ignore fillers such as so, got, ki, ke liye. In "Ravi Kumar bought t-shirts", the customer is Ravi Kumar; t-shirts is an item, never part of the name. If quantity or price was not spoken, do not guess it. Understand Indian number grouping, Hindi and Telugu spoken numbers including डेढ़ सौ=150 and రెండు వందలు=200. Price per item and quantity are separate. Preserve proper names. If one book costs 500 and the customer buys 30, quantity is 30 and unit_price is 500. Match knownCustomers only when the name was actually spoken.';
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS')
     return new Response(null, { headers: corsHeaders });
@@ -32,7 +32,7 @@ Deno.serve(async (req) => {
         : [],
     };
     const { value } = await callProviderChain(
-      buildProviderChain(),
+      buildTextProviderChain(body.providerPreference),
       (p) => ({
         model: p.model,
         messages: [
