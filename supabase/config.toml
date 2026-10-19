@@ -6,3 +6,6 @@ verify_jwt = true
 
 [functions.speak-reply]
 verify_jwt = true
+
+[functions.ai-health]
+verify_jwt = true
