@@ -57,6 +57,7 @@ export const LANGUAGE_LABELS: Record<Language, { label: string; flag: string }> 
   mr: { label: 'मराठी', flag: '🇮🇳' },
   bn: { label: 'বাংলা', flag: '🇮🇳' },
   gu: { label: 'ગુજરાતી', flag: '🇮🇳' },
+  ur: { label: 'اردو', flag: '🇵🇰' },
 };
 
 /** English names, sent to the AI parser so it knows what to expect. */
@@ -70,6 +71,7 @@ export const LANGUAGE_NAMES: Record<Language, string> = {
   mr: 'Marathi',
   bn: 'Bengali',
   gu: 'Gujarati',
+  ur: 'Urdu',
 };
 
 export const SPEECH_LOCALES: Record<Language, string> = {
@@ -82,4 +84,5 @@ export const SPEECH_LOCALES: Record<Language, string> = {
   mr: 'mr-IN',
   bn: 'bn-IN',
   gu: 'gu-IN',
+  ur: 'ur-PK',
 };
