@@ -4,18 +4,8 @@ import type { Language } from './types';
 export const SILENCE_FINISH_MS = 3500;
 export const RESTART_DELAY_MS = 150;
 
-const FINISH_PHRASES = [
-  'done',
-  "that's all",
-  'thats all',
-  'bas',
-  'ho gaya',
-  'ayipoyindi',
-  'అయిపోయింది',
-];
-
 export type ListenState = 'listening' | 'still-listening' | 'stopped';
-export type FinishReason = 'silence' | 'done' | 'phrase' | 'error';
+export type FinishReason = 'silence' | 'done' | 'error';
 
 export interface ListenCallbacks {
   onTranscript: (text: string) => void;
@@ -25,7 +15,6 @@ export interface ListenCallbacks {
 }
 
 export interface ListenSession {
-  /** Finish the turn now (Done button / tap), keeping the transcript. */
   stop: () => void;
 }
 
@@ -62,19 +51,12 @@ export function isSpeechSupported(): boolean {
 }
 
 const FATAL_ERRORS = new Set([
-  'not-allowed',
-  'service-not-allowed',
-  'audio-capture',
-  'language-not-supported',
-  'language-not-available',
+  'not-allowed', 'service-not-allowed', 'audio-capture',
+  'language-not-supported', 'language-not-available',
 ]);
 
-/**
- * Long-running listening turn: continuous recognition with interim results,
- * auto-restart when the browser cuts the session, a 3.5s silence finisher,
- * spoken finish phrases, and a manual Done stop. The transcript accumulates
- * from all results without losing or duplicating words.
- */
+/** Browser-only speech session. Each browser restart gets a fresh result map;
+ * final words are committed once and interim words replace in place. */
 export function startListenSession(
   language: Language,
   callbacks: ListenCallbacks
@@ -82,139 +64,107 @@ export function startListenSession(
   const Ctor = getRecognitionCtor();
   if (!Ctor) return null;
 
-  let active = true; // session (turn) is still open
+  let active = true;
   let restartTimer: number | null = null;
   let silenceTimer: number | null = null;
-
-  const finals = new Map<number, string>();
-  const interims = new Map<number, string>();
+  let committed = '';
+  let recognition: RecognitionLike | null = null;
+  let finals = new Map<number, string>();
+  let interims = new Map<number, string>();
   let lastText = '';
 
-  function composeText(): string {
-    const parts: string[] = [];
-    const sizes = Math.max(finals.size, interims.size);
-    for (let i = 0; i < Math.max(sizes, 0); i++) {
-      const f = finals.get(i);
-      if (f !== undefined) parts.push(f);
-      else {
-        const it = interims.get(i);
-        if (it !== undefined) parts.push(it);
-      }
-    }
-    return parts.join(' ').replace(/\s+/g, ' ').trim();
-  }
-
-  function clearSilence() {
-    if (silenceTimer !== null) {
-      window.clearTimeout(silenceTimer);
-      silenceTimer = null;
-    }
-  }
-
-  function armSilence() {
+  const composeSegment = () => {
+    const keys = [...new Set([...finals.keys(), ...interims.keys()])].sort((a, b) => a - b);
+    return keys.map((i) => finals.get(i) ?? interims.get(i) ?? '').filter(Boolean).join(' ');
+  };
+  const composeText = () => [committed, composeSegment()].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  const clearSilence = () => {
+    if (silenceTimer !== null) window.clearTimeout(silenceTimer);
+    silenceTimer = null;
+  };
+  const armSilence = () => {
     clearSilence();
-    silenceTimer = window.setTimeout(() => {
-      if (active) finish(composeText(), 'silence');
-    }, SILENCE_FINISH_MS);
-  }
-
-  function finish(text: string, reason: FinishReason) {
-    if (!active) return;
-    active = false;
-    clearSilence();
-    if (restartTimer !== null) {
-      window.clearTimeout(restartTimer);
-      restartTimer = null;
-    }
-    callbacks.onStateChange('stopped');
-    try {
-      rec.stop();
-    } catch {
-      // ignore
-    }
-    callbacks.onFinish(text, reason);
-  }
-
-  function restart() {
-    if (!active) return;
-    restartTimer = window.setTimeout(() => {
-      restartTimer = null;
-      if (!active) return;
-      try {
-        rec.start();
-      } catch {
-        // start() can throw if the engine still considers itself running;
-        // try once more on the next end event.
-      }
-    }, RESTART_DELAY_MS);
-  }
-
-  const rec = new Ctor();
-  rec.lang = SPEECH_LOCALES[language];
-  rec.continuous = true;
-  rec.interimResults = true;
-
-  rec.onresult = (e) => {
-    if (!active) return;
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const result = e.results[i];
-      const transcript = result[0]?.transcript ?? '';
-      if (result.isFinal) {
-        interims.delete(i);
-        finals.set(i, transcript);
-      } else {
-        interims.set(i, transcript);
-      }
-    }
-
+    silenceTimer = window.setTimeout(() => finish(composeText(), 'silence'), SILENCE_FINISH_MS);
+  };
+  const publish = (state: ListenState = 'still-listening') => {
     const text = composeText();
     if (text !== lastText) {
       lastText = text;
       callbacks.onTranscript(text);
-      callbacks.onStateChange('still-listening');
-      armSilence(); // reset the silence clock on every new word
     }
-
-    // Spoken finish phrase ends the turn immediately.
-    const lower = text.toLowerCase();
-    for (const phrase of FINISH_PHRASES) {
-      if (lower.endsWith(phrase)) {
-        const stripped = text.slice(0, text.length - phrase.length).replace(/\s+$/, '');
-        callbacks.onTranscript(stripped);
-        finish(stripped, 'phrase');
-        return;
+    callbacks.onStateChange(state);
+  };
+  const finish = (text: string, reason: FinishReason) => {
+    if (!active) return;
+    active = false;
+    clearSilence();
+    if (restartTimer !== null) window.clearTimeout(restartTimer);
+    restartTimer = null;
+    callbacks.onStateChange('stopped');
+    try { recognition?.stop(); } catch { /* already stopped */ }
+    callbacks.onFinish(text.trim(), reason);
+  };
+  const startRecognition = () => {
+    if (!active) return;
+    const rec = new Ctor();
+    recognition = rec;
+    finals = new Map();
+    interims = new Map();
+    rec.lang = SPEECH_LOCALES[language] ?? 'en-IN';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (event) => {
+      if (!active || recognition !== rec) return;
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const wordText = result[0]?.transcript?.trim() ?? '';
+        if (result.isFinal) {
+          interims.delete(i);
+          if (wordText) finals.set(i, wordText);
+        } else if (wordText) {
+          interims.set(i, wordText);
+        } else {
+          interims.delete(i);
+        }
       }
+      publish();
+      armSilence();
+    };
+    rec.onerror = (event) => {
+      if (!active || recognition !== rec) return;
+      callbacks.onError(event.error);
+      if (FATAL_ERRORS.has(event.error)) finish(composeText(), 'error');
+    };
+    rec.onend = () => {
+      if (!active || recognition !== rec) return;
+      const segmentPart = composeSegment();
+      if (segmentPart) committed = [committed, segmentPart].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+      finals.clear();
+      interims.clear();
+      publish('listening');
+      restartTimer = window.setTimeout(() => {
+        restartTimer = null;
+        if (active) startRecognition();
+      }, RESTART_DELAY_MS);
+    };
+    try {
+      // Called synchronously from the mic click handler for the initial engine start.
+      rec.start();
+    } catch {
+      if (recognition === rec) recognition = null;
+      callbacks.onError('start-failed');
+      if (committed) finish(committed, 'error');
+      else finish('', 'error');
     }
   };
 
-  rec.onerror = (e) => {
-    if (!active) return;
-    if (FATAL_ERRORS.has(e.error)) {
-      callbacks.onError(e.error);
-      finish(lastText, 'error');
-      return;
-    }
-    // 'no-speech', 'network', 'aborted' — onend will restart and keep going.
-  };
-
-  rec.onend = () => {
-    if (!active) return;
-    // Browser ended recognition on its own; restart and keep the transcript.
-    restart();
-  };
-
-  try {
-    rec.start();
-  } catch {
-    return null;
-  }
-
+  startRecognition();
   callbacks.onStateChange('listening');
   armSilence();
 
   return {
     stop() {
-      finish(lastText, 'done');
+      finish(composeText(), 'done');
     },
   };
 }
