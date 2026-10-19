@@ -150,3 +150,17 @@ test('Gemini 3.8 uses supported low thinking, never minimal', async () => {
     assert.equal(request.generationConfig.thinkingConfig.thinkingLevel, 'low');
   } finally {globalThis.fetch = original;}
 });
+
+test('Gemini 3.5 Flash-Lite uses its supported minimal thinking for fast billing', async () => {
+  const original = globalThis.fetch;
+  let request: any;
+  globalThis.fetch = async (_url, opts) => {
+    request = JSON.parse(String(opts?.body));
+    return Response.json({candidates:[{content:{parts:[{text:'{"ok":true}'}]}}]});
+  };
+  try {
+    const p = {...buildProviderChain()[0], model:'gemini-3.5-flash-lite'};
+    await callProviderChain([p], body, x => (x as any)?.ok ? true : null, 'flash-lite');
+    assert.equal(request.generationConfig.thinkingConfig.thinkingLevel, 'minimal');
+  } finally {globalThis.fetch = original;}
+});

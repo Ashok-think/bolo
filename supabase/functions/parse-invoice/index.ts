@@ -1,4 +1,4 @@
-// Rebundle shared provider compatibility for Gemini 3.8 (low thinking).
+// Rebundle model-specific thinking: minimal on Flash-Lite; low on Gemini 3.8.
 import {
   authorizeAI,
   corsHeaders,
