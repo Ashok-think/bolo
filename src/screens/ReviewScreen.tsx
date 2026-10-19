@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, AlertTriangle, Sparkles, RefreshCw, MicOff, Loader2, ArrowLeft } from 'lucide-react';
-import type { Business, Customer } from '@/lib/types';
+import type { Business, Customer, Language } from '@/lib/types';
 import { parseInvoiceTextInstant, runBackgroundAI, AI_TIMEOUT_MS } from '@/lib/parser';
 import type { ParsedInvoice, ParsedItem } from '@/lib/parser';
 import { createInvoice } from '@/lib/invoiceOps';
@@ -21,6 +21,7 @@ export function ReviewScreen({
   customers,
   parsed,
   transcript,
+  lang,
   onCreated,
   onPrefetchedBusiness,
   onBack,
@@ -29,6 +30,7 @@ export function ReviewScreen({
   customers: Customer[];
   parsed: ParsedInvoice;
   transcript: string;
+  lang: Language;
   onCreated: (invoiceId: string) => void;
   onPrefetchedBusiness: (b: Business) => void;
   onBack: () => void;
@@ -40,6 +42,7 @@ export function ReviewScreen({
   const [reParsing, setReParsing] = useState(false);
   const [aiUsed, setAiUsed] = useState(parsed.source === 'ai');
   const [aiImproved, setAiImproved] = useState(false);
+  const [aiPending, setAiPending] = useState(false);
   const userEditedRef = useRef(false);
 
   const [customerName, setCustomerName] = useState(parsed.customer);
@@ -61,22 +64,22 @@ export function ReviewScreen({
     if (transcriptEmpty) return;
     let cancelled = false;
     void (async () => {
+      setAiPending(true);
       const ai = await runBackgroundAI(
         transcript,
-        business.language,
+        lang,
         customers.map((c) => c.name),
         AI_TIMEOUT_MS
       );
-      if (!ai || cancelled || userEditedRef.current) return;
+      if (cancelled) return;
+      setAiPending(false);
+      if (!ai || userEditedRef.current) return;
       setAiUsed(true);
       setAiImproved(true);
-      if (ai.customer && !customerName.trim()) setCustomerName(ai.customer);
-      setItems((cur) => {
-        const untouched = cur.length === 0 || cur.every((it) => !it.name && it.unit_price === 0);
-        return untouched && ai.items.length > 0 ? ai.items.map((it) => ({ ...it })) : cur;
-      });
-      if (ai.advance > 0 && advance.trim() === '') setAdvance(String(ai.advance));
-      if (ai.notes && !notes.trim()) setNotes(ai.notes);
+      if (ai.customer) setCustomerName(ai.customer);
+      if (ai.items.length > 0) setItems(ai.items.map((it) => ({ ...it })));
+      setAdvance(ai.advance ? String(ai.advance) : '');
+      setNotes(ai.notes);
     })();
     return () => {
       cancelled = true;
@@ -145,7 +148,7 @@ export function ReviewScreen({
     if (!text) return;
     trackEdit();
     setReParsing(true);
-    const result = await parseInvoiceTextInstant(text, business.language);
+    const result = await parseInvoiceTextInstant(text, lang);
     setReParsing(false);
     setAiUsed(false);
     setCustomerName(result.customer);
@@ -219,6 +222,14 @@ export function ReviewScreen({
         </button>
         <h1 className="font-display font-bold text-xl text-ink mb-1">Review invoice</h1>
       </div>
+      {aiPending && (
+        <div className="mt-2 mb-4" role="status" aria-live="polite">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-primary/10">
+            <div className="h-full w-1/3 rounded-full bg-primary animate-pulse" />
+          </div>
+          <p className="mt-1 text-xs text-muted">Checking for a better match…</p>
+        </div>
+      )}
       <p className="text-sm text-muted mb-5">Check the details, then create it.</p>
 
       {transcriptEmpty ? (
