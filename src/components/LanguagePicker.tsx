@@ -1,7 +1,7 @@
 import type { Language } from '@/lib/types';
 import { LANGUAGE_LABELS } from '@/lib/format';
 
-const ORDER: Language[] = ['en', 'hi', 'te', 'ta', 'kn', 'ml', 'mr', 'bn', 'gu'];
+const ORDER: Language[] = ['en', 'hi', 'te', 'ta', 'kn', 'ml', 'mr', 'bn', 'gu', 'ur'];
 
 export function LanguagePicker({
   value,
