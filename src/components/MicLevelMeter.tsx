@@ -60,7 +60,7 @@ export function MicLevelMeter({ stream, active }: { stream: MediaStream | null; 
           ref={(el) => {
             barsRef.current[i] = el;
           }}
-          className="w-1.5 rounded-full bg-primary transition-transform duration-75"
+          className={`w-1.5 rounded-full bg-primary transition-transform duration-75 ${active && !stream ? 'animate-pulse' : ''}`}
           style={{ height: '100%', transform: 'scaleY(0.2)', transformOrigin: 'bottom' }}
         />
       ))}
