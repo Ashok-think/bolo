@@ -89,10 +89,18 @@ const MESSAGES: Record<Language, Record<ReminderTone, string>> = {
     final:
       'Hi {name}, this is a final reminder for invoice #{number} from {business} ({amount}), {days} days overdue. Kindly settle it via UPI: {upi} today.',
   },
+  ur: {
+    gentle:
+      'Hi {name}, a gentle reminder about invoice #{number} from {business} for {amount}. Pay via UPI: {upi}. Thank you!',
+    firm:
+      'Hi {name}, invoice #{number} from {business} ({amount}) is now {days} days overdue. Please pay soon via UPI: {upi}.',
+    final:
+      'Hi {name}, this is a final reminder for invoice #{number} from {business} ({amount}), {days} days overdue. Kindly settle it via UPI: {upi} today.',
+  },
 };
 
 /** Languages whose reminder templates are still pending translation. */
-const TRANSLATIONS_PENDING: Language[] = ['ta', 'kn', 'ml', 'mr', 'bn', 'gu'];
+const TRANSLATIONS_PENDING: Language[] = ['ta', 'kn', 'ml', 'mr', 'bn', 'gu', 'ur'];
 
 export function remindersInEnglish(lang: Language): boolean {
   return TRANSLATIONS_PENDING.includes(lang);
