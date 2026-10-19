@@ -1,0 +1,11 @@
+[functions.parse-invoice]
+verify_jwt = true
+
+[functions.converse]
+verify_jwt = true
+
+[functions.transcribe-audio]
+verify_jwt = true
+
+[functions.speak-reply]
+verify_jwt = true
