@@ -1,11 +1,8 @@
+-- Additive migration: preserve the original RPC used by the published app.
 ALTER TABLE public.invoices ADD COLUMN IF NOT EXISTS client_request_id uuid;
 CREATE UNIQUE INDEX IF NOT EXISTS invoices_client_request_id_idx ON public.invoices(client_request_id) WHERE client_request_id IS NOT NULL;
-DROP FUNCTION IF EXISTS public.create_invoice_batched(uuid,uuid,text,text,jsonb,numeric,text,jsonb);
-CREATE OR REPLACE FUNCTION`.
-- No destructive operations; no data changes.
-*/
 
-CREATE OR REPLACE FUNCTION public.create_invoice_batched(
+CREATE OR REPLACE FUNCTION public.create_invoice_batched_v2(
   p_business_id uuid,
   p_customer_id uuid,
   p_customer_name text,
@@ -29,7 +26,6 @@ DECLARE
   v_advance numeric;
   v_fully_paid boolean;
   v_invoice public.invoices;
-  v_name text;
 BEGIN
   -- Ownership re-check: the business must belong to the caller
   IF v_user_id IS NULL OR NOT EXISTS (
@@ -98,6 +94,6 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.create_invoice_batched TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_invoice_batched_v2(uuid,uuid,text,text,jsonb,numeric,text,jsonb,uuid) TO authenticated;
 
-REVOKE ALL ON FUNCTION public.create_invoice_batched(uuid,uuid,text,text,jsonb,numeric,text,jsonb,uuid) FROM PUBLIC,anon;
+REVOKE ALL ON FUNCTION public.create_invoice_batched_v2(uuid,uuid,text,text,jsonb,numeric,text,jsonb,uuid) FROM PUBLIC,anon;

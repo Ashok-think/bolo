@@ -41,3 +41,7 @@ The new GitHub workflow runs Node tests, typecheck/build and Deno checks on the 
 5. Repeat with provider keys disabled in Bolt: typing and rule-based review must stay usable.
 6. Create a disposable invoice with balance; double tap Create; confirm only one invoice, QR, UPI amount and `/i/:token` in an incognito window. Check at 390px width.
 7. Use Clear demo values only in the disposable shared demo account. Confirm zero invoices/customers and reset demo settings.
+
+## Rollout review correction
+
+Fixed a malformed SQL header missed by frontend CI; added PostgreSQL grammar parsing and a top-level additive-operation allowlist to CI. Invoice creation now uses a separate `create_invoice_batched_v2` RPC, preserving the published client's original RPC. Both migrations parse locally; 23 unit tests, 5 parser checks, typecheck and build pass again. No migration, demo reset or live publication has been performed by this review. SQL grammar checks do not execute PL/pgSQL or prove runtime database behavior. Deploy through the original Bolt project from GitHub, not a ZIP.
