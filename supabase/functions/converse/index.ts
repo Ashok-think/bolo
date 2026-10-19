@@ -1,3 +1,4 @@
+// Rebundle shared provider compatibility for Gemini 3.8 (low thinking).
 import {
   authorizeAI,
   corsHeaders,
