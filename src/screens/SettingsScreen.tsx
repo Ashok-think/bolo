@@ -261,7 +261,7 @@ export function SettingsScreen({
     setHealthBusy(true);
     setHealth([]);
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), 6500);
+    const timer = setTimeout(() => abort.abort(), 10000);
     try {
       const token = await getAccessToken();
       if (!token) throw new Error('Sign in first.');

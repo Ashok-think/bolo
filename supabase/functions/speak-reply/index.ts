@@ -1,4 +1,5 @@
 import { authorizeAI, corsHeaders, json } from '../_shared/ai.ts';
+import { generateVoice } from '../_shared/tts.ts';
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS')
     return new Response(null, { headers: corsHeaders });
@@ -13,52 +14,11 @@ Deno.serve(async (req) => {
     const key = Deno.env.get('GEMINI_API_KEY');
     if (!key) return json(503, { error: 'Gemini voice is not configured' });
     const model =
-      Deno.env.get('GEMINI_TTS_MODEL') || 'gemini-2.5-flash-preview-tts';
+      Deno.env.get('GEMINI_TTS_MODEL') || 'gemini-3.8-flash-lite-tts';
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), 7000);
+    const timer = setTimeout(() => abort.abort(), 9000);
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': key,
-          },
-          signal: abort.signal,
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `Read warmly and naturally in the language of this text: ${text}`,
-                  },
-                ],
-              },
-            ],
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-              },
-            },
-          }),
-        },
-      );
-      if (!res.ok)
-        return json(503, {
-          error:
-            res.status === 429
-              ? 'Gemini voice quota reached'
-              : 'Gemini voice unavailable',
-        });
-      const data = await res.json();
-      const audio = data?.candidates?.[0]?.content?.parts?.find(
-        (p: { inlineData?: unknown }) => p.inlineData,
-      )?.inlineData;
-      if (typeof audio?.data !== 'string')
-        return json(503, { error: 'No audio returned' });
-      return json(200, { pcm: audio.data, sampleRate: 24000 });
+      return json(200, await generateVoice(key, model, text, abort.signal));
     } finally {
       clearTimeout(timer);
     }

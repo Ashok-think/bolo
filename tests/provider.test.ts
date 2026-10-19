@@ -135,3 +135,18 @@ test('Qwen3.8 Omni uses text-only JSON mode with thinking disabled', async () =>
     assert.equal(request.responseSchema, undefined);
   } finally { globalThis.fetch = original; }
 });
+
+test('Gemini 3.8 uses supported low thinking, never minimal', async () => {
+  const original = globalThis.fetch;
+  let request: any;
+  globalThis.fetch = async (_url, opts) => {
+    request = JSON.parse(String(opts?.body));
+    return Response.json({candidates:[{content:{parts:[{text:'{"ok":true}'}]}}]});
+  };
+  try {
+    const p = {...buildProviderChain()[0], model:'gemini-3.8-flash'};
+    const r = await callProviderChain([p], body, x => (x as any)?.ok ? true : null, 'gemini-3.8');
+    assert.equal(r.value, true);
+    assert.equal(request.generationConfig.thinkingConfig.thinkingLevel, 'low');
+  } finally {globalThis.fetch = original;}
+});
