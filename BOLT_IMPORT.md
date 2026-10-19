@@ -2,24 +2,25 @@
 
 This is a repair of the existing React/Vite/Tailwind Bolo project. It uses the same Bolt Database and Supabase-compatible client. No database was moved or provisioned elsewhere. No production data was cleared by these source changes.
 
-## Import into Bolt
+## Update the ORIGINAL Bolt project from GitHub
 
-1. Import this project ZIP (or review the `gpt-fixes` PR and import that branch). Preserve the existing Bolt Database connection. The ZIP includes only the original public frontend connection variables in `.env`; server secrets are not included. GitHub intentionally excludes `.env`.
-2. Ask Bolt to apply, in order:
+Do not import a ZIP or create a new Bolt project. Keep https://bolt.new/~/sb1-sntfdm9s and its existing database connection. GitHub excludes `.env`; keep the original public frontend connection variables in Bolt.
+
+1. Record the current Bolt version as a restoration point. Review and merge the P0 PR only after CI passes, then pull GitHub `main` in the existing project. Do not publish yet.
+2. Before applying SQL, display and review both migrations in order:
    - `supabase/migrations/20261019170000_p0_ai_limits_and_demo_reset.sql`
    - `supabase/migrations/20261019170100_p0_invoice_idempotency.sql`
-3. Ask Bolt to deploy these FOUR server functions, including their `_shared` imports:
-   - `parse-invoice`
-   - `converse`
-   - `speak-reply`
-   - **new:** `ai-health`
-4. In Bolt server secrets keep `GEMINI_API_KEY`. `GEMINI_MODEL` is optional (default `gemini-2.5-flash`). `GEMINI_TTS_MODEL` is optional (default `gemini-2.5-flash-preview-tts`; use a TTS-capable model, not the text parser model). For the fallback provider set `AI_BASE_URL`, `AI_API_KEY`, and `AI_MODEL`. Bolt supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` on the server. Never put these server secrets in Vite variables or GitHub.
-5. Run `npm install`, `npm test`, `npm run typecheck`, and `npm run build` in Bolt. The automated checks do not replace the phone tests below.
-6. Open Settings → **Check AI**. A missing migration, missing/deployed function, rejected key, unavailable model, rate limit, or timeout produces a plain diagnostic. No key is shown.
-7. Settings → choose the language, **Gemini voice**, then **Test voice**. Gemini voice is opt-in; device voice is the default. The result says which voice actually played. If the browser blocked autoplay, the generated clip is cached: tap **Test voice** again, or **Play reply** in Talk to Bolo. If the device has no voice for that language, the reply stays visible as text.
-8. Settings → **Test understanding** runs a five-second text-only AI attempt and shows the resulting customer, quantities, unit prices, total, advance and balance. It explicitly labels a rule-based result if AI was unavailable in this diagnostic screen; regular billing degrades silently.
-9. Sign into the demo, then Settings → **Clear demo values** once if you want an empty demo. This is a new database function restricted to the `demo@bolo.app` account and its own business. It clears demo invoices/customers and resets demo business settings. It cannot clear a normal account. Sample loading remains optional; samples contain no customer phone numbers. Add a UPI ID before testing payment QR codes.
-10. Once the PR checks and Bolt preview pass, publish the updated app in Bolt. GitHub source changes alone do not deploy the server functions or update the live Bolt site.
+   The first defines an atomic AI quota function (40 attempts/user/day and 1,000 globally/day) and an explicitly invoked demo reset function. Defining these functions does not call them or change existing rows. The reset body contains DELETE/UPDATE, but requires an authenticated JWT for `demo@bolo.app` AND ownership of the specified business. Never invoke reset during deployment. Do not automatically run any deletion, truncation or rewrite of existing data.
+   The second adds a nullable request-ID column, a unique partial index and `create_invoice_batched_v2`. It preserves the original invoice RPC and all existing rows so the currently published client continues working. It does not backfill data.
+3. Apply only the reviewed additive definitions. If the database differs or a migration is already applied, stop and report rather than modifying old records or dropping functions.
+4. Deploy exactly these four server functions with their `_shared` imports: `parse-invoice`, `converse`, `speak-reply`, `ai-health`.
+5. Enter secrets in Bolt's server-function secrets settings, never in chat or GitHub: `GEMINI_API_KEY`; optional `GEMINI_MODEL` (default `gemini-2.5-flash`) and `GEMINI_TTS_MODEL` (default `gemini-2.5-flash-preview-tts`). Optional fallback: `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`. Bolt supplies server `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Keep only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in frontend configuration.
+6. Run `npm install`, `npm test`, `npm run test:parser`, `npm run typecheck`, `npm run build`, and the SQL check from CI. Report anything unverified.
+7. In preview, run Settings → Check AI (at least one provider green), then Test understanding with English, Hindi, Telugu and mixed acceptance sentences. Check customer, quantities, unit prices, totals and balance.
+8. Test a two-second speaking pause, immediate Review, invoice creation and QR on invoice/public link, and Talk to Bolo without the app hearing its own reply. A real microphone and phone require manual testing; CI cannot verify them.
+9. Gemini voice is OFF by default. Device voice remains the default. Test optional Gemini voice only after the core flow works; leave it off if slow or silent. Missing matching device voice leaves a visible text reply.
+10. Do not clear demo data during rollout. The explicit Settings action is restricted to the demo account and its own business; it is a separate destructive operation, not a deployment step.
+11. Do not Publish until preview and real-phone acceptance tests pass. Restore the recorded version if necessary. GitHub changes alone do not deploy server functions or update the live Bolt site.
 
 ## P0 behavior
 

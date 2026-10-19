@@ -77,7 +77,7 @@ export async function createInvoice(input: {
   } = input;
 
   // Single batched write: customer reuse/creation, invoice and items together
-  const { data, error } = await supabase.rpc('create_invoice_batched', {
+  const { data, error } = await supabase.rpc('create_invoice_batched_v2', {
     p_request_id: input.requestId ?? crypto.randomUUID(),
     p_business_id: businessId,
     p_customer_id: customerId,
