@@ -11,7 +11,7 @@ export interface PaymentInput {
  */
 export async function markInvoicePaid(
   invoice: Invoice,
-  amount: number
+  amount: number,
 ): Promise<{ error: string | null }> {
   const paid = Math.min(invoice.total, invoice.paid_amount + amount);
   const fullyPaid = paid >= invoice.total - 0.009;
@@ -28,22 +28,34 @@ export async function markInvoicePaid(
   return { error: error?.message ?? null };
 }
 
-export async function deleteInvoice(invoiceId: string): Promise<{ error: string | null }> {
-  const { error } = await supabase.from('invoices').delete().eq('id', invoiceId);
+export async function deleteInvoice(
+  invoiceId: string,
+): Promise<{ error: string | null }> {
+  const { error } = await supabase
+    .from('invoices')
+    .delete()
+    .eq('id', invoiceId);
   return { error: error?.message ?? null };
 }
 
 export async function updateInvoice(
   invoiceId: string,
   updates: Partial<
-    Pick<Invoice, 'status' | 'paid_amount' | 'paid_at' | 'sent_at' | 'notes' | 'due_date'>
-  >
+    Pick<
+      Invoice,
+      'status' | 'paid_amount' | 'paid_at' | 'sent_at' | 'notes' | 'due_date'
+    >
+  >,
 ): Promise<{ error: string | null }> {
-  const { error } = await supabase.from('invoices').update(updates).eq('id', invoiceId);
+  const { error } = await supabase
+    .from('invoices')
+    .update(updates)
+    .eq('id', invoiceId);
   return { error: error?.message ?? null };
 }
 
 export async function createInvoice(input: {
+  requestId?: string;
   businessId: string;
   customerId: string | null;
   customerName: string;
@@ -53,10 +65,20 @@ export async function createInvoice(input: {
   notes?: string;
   existingCustomers: Customer[];
 }): Promise<{ invoice: Invoice | null; error: string | null }> {
-  const { businessId, customerId, customerName, customerPhone, items, advance, notes, existingCustomers } = input;
+  const {
+    businessId,
+    customerId,
+    customerName,
+    customerPhone,
+    items,
+    advance,
+    notes,
+    existingCustomers,
+  } = input;
 
   // Single batched write: customer reuse/creation, invoice and items together
   const { data, error } = await supabase.rpc('create_invoice_batched', {
+    p_request_id: input.requestId ?? crypto.randomUUID(),
     p_business_id: businessId,
     p_customer_id: customerId,
     p_customer_name: customerName,
@@ -99,7 +121,7 @@ export interface InvoiceDetailData {
 }
 
 export async function fetchInvoiceDetail(
-  invoiceId: string
+  invoiceId: string,
 ): Promise<{ data: InvoiceDetailData | null; error: string | null }> {
   const { data, error } = await supabase
     .from('invoices')
@@ -107,17 +129,23 @@ export async function fetchInvoiceDetail(
     .eq('id', invoiceId)
     .maybeSingle();
 
-  if (error || !data) return { data: null, error: error?.message ?? 'Invoice not found' };
+  if (error || !data)
+    return { data: null, error: error?.message ?? 'Invoice not found' };
 
-  const { customers, businesses, invoice_items, ...invoice } = data as unknown as {
-    customers: Customer | null;
-    businesses: Business;
-    invoice_items: InvoiceItem[];
-  } & Invoice;
+  const { customers, businesses, invoice_items, ...invoice } =
+    data as unknown as {
+      customers: Customer | null;
+      businesses: Business;
+      invoice_items: InvoiceItem[];
+    } & Invoice;
 
   return {
     data: {
-      invoice: { ...invoice, total: Number(invoice.total), paid_amount: Number(invoice.paid_amount) },
+      invoice: {
+        ...invoice,
+        total: Number(invoice.total),
+        paid_amount: Number(invoice.paid_amount),
+      },
       customer: customers,
       business: businesses,
       items: invoice_items.map((it) => ({
@@ -140,7 +168,10 @@ export async function fetchPublicInvoice(token: string): Promise<{
   } | null;
   error: string | null;
 }> {
-  const { data, error } = await supabase.rpc('get_invoice_by_token', { p_token: token });
-  if (error || !data) return { data: null, error: error?.message ?? 'Invoice not found' };
+  const { data, error } = await supabase.rpc('get_invoice_by_token', {
+    p_token: token,
+  });
+  if (error || !data)
+    return { data: null, error: error?.message ?? 'Invoice not found' };
   return { data: data as never, error: null };
 }
