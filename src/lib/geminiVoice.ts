@@ -90,9 +90,18 @@ function playBlob(blob: Blob): Promise<boolean> {
  * reply finished playing.
  */
 export async function speakReply(text: string, lang: Language): Promise<boolean> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 4500);
   try {
-    const token = await getAccessToken();
-    if (token) {
+    const token = await Promise.race([
+      getAccessToken(),
+      new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 4500)),
+    ]);
+    if (token && !timedOut) {
       const res = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/speak-reply`,
         {
@@ -103,9 +112,10 @@ export async function speakReply(text: string, lang: Language): Promise<boolean>
             Apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
           },
           body: JSON.stringify({ text, lang }),
+          signal: controller.signal,
         }
       );
-      if (res.ok) {
+      if (res.ok && !timedOut) {
         const data = (await res.json().catch(() => null)) as
           | { pcm?: unknown; sampleRate?: unknown }
           | null;
@@ -117,6 +127,8 @@ export async function speakReply(text: string, lang: Language): Promise<boolean>
     }
   } catch {
     // fall through to device voice
+  } finally {
+    window.clearTimeout(timer);
   }
   return speakAsync(text, lang);
 }
