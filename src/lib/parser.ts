@@ -18,7 +18,7 @@ export interface ParsedInvoice {
   source?: 'ai' | 'rules';
 }
 
-export const AI_TIMEOUT_MS = 8000;
+export const AI_TIMEOUT_MS = 5000;
 
 /**
  * Instant parse: rule-based result right away (no network). The AI attempt
@@ -84,13 +84,13 @@ export async function runBackgroundAI(
   const trimmed = text.trim();
   if (!trimmed) return null;
 
+  const controller = new AbortController();
+  let timer: number | null = null;
   try {
+    const request = (async (): Promise<ParsedInvoice | null> => {
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
     if (!token) return null;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const response = await fetch(
       `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/parse-invoice`,
@@ -110,13 +110,21 @@ export async function runBackgroundAI(
         }),
       }
     );
-    clearTimeout(timer);
-
     if (!response.ok) return null;
 
     const data = (await response.json().catch(() => null)) as AiWireResponse | null;
     return data ? normalizeAI(data) : null;
+    })();
+    const timeout = new Promise<null>((resolve) => {
+      timer = window.setTimeout(() => {
+        controller.abort();
+        resolve(null);
+      }, Math.max(0, timeoutMs));
+    });
+    return await Promise.race([request, timeout]);
   } catch {
     return null;
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
   }
 }
