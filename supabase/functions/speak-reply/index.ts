@@ -8,7 +8,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const TTS_MODEL = "gemini-2.5-flash-preview-tts";
+const TTS_MODEL = "gemini-3.8-flash-tts";
 const VOICE = "Kore"; // warm, consistent voice across languages
 
 function json(status: number, body: unknown): Response {
@@ -46,45 +46,52 @@ Deno.serve(async (req: Request) => {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12_000);
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [{ parts: [{ text }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE } },
-            },
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/interactions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": apiKey,
           },
-        }),
+          signal: controller.signal,
+          body: JSON.stringify({
+            model: TTS_MODEL,
+            input: [{
+              type: "user_input",
+              content: [{
+                type: "text",
+                text,
+                annotations: [{ type: "speech_metadata", style: "warm, friendly, clear, natural, conversational pace" }],
+              }],
+            }],
+            response_format: { type: "audio", mime_type: "audio/l16", sample_rate: 24000 },
+            generation_config: { speech_config: [{ voice: VOICE }] },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        console.log(`speak-reply: gemini tts failed: HTTP ${response.status}`);
+        return json(502, { error: "Could not generate speech" });
       }
-    );
-    clearTimeout(timer);
 
-    if (!response.ok) {
-      console.log(`speak-reply: gemini tts failed: HTTP ${response.status}`);
-      return json(502, { error: "Could not generate speech" });
+      const payload = await response.json().catch(() => null);
+      const outputAudio = payload?.output_audio as { data?: unknown } | undefined;
+      const steps = Array.isArray(payload?.steps) ? payload.steps : [];
+      const stepAudio = steps.flatMap((step: { content?: unknown }) =>
+        Array.isArray(step.content) ? step.content : []
+      ).find((part: { type?: unknown; data?: unknown }) => part.type === "audio" && typeof part.data === "string");
+      const pcm = typeof outputAudio?.data === "string" ? outputAudio.data : stepAudio?.data;
+      if (typeof pcm !== "string" || !pcm) {
+        return json(502, { error: "Could not generate speech" });
+      }
+      return json(200, { pcm, sampleRate: 24000 });
+    } finally {
+      clearTimeout(timer);
     }
-
-    const payload = await response.json().catch(() => null);
-    const part = payload?.candidates?.[0]?.content?.parts?.find(
-      (p: { inlineData?: unknown }) => p.inlineData
-    );
-    const inline = part?.inlineData as { data?: unknown; mimeType?: unknown } | undefined;
-    if (!inline || typeof inline.data !== "string") {
-      return json(502, { error: "Could not generate speech" });
-    }
-
-    const rateMatch =
-      typeof inline.mimeType === "string" ? inline.mimeType.match(/rate=(\d+)/) : null;
-    const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
-
-    return json(200, { pcm: inline.data, sampleRate });
   } catch (_err) {
     return json(500, { error: "Could not generate speech" });
   }
