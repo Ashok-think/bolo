@@ -2,14 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Mic, X, Send, Loader2, AlertCircle, ArrowLeft } from 'lucide-react';
 import type { Business, Language } from '@/lib/types';
 import type { ParsedInvoice } from '@/lib/parser';
-import { converseTurn, emptyDraft, draftTotal, transcribeAudio } from '@/lib/converse';
+import { converseTurn, emptyDraft, draftTotal, ruleBasedTurn } from '@/lib/converse';
 import type { ConversationDraft, ConversationTurn } from '@/lib/converse';
 import { startListenSession } from '@/lib/speech';
 import type { ListenSession } from '@/lib/speech';
 import { stopPlayback, speakReply } from '@/lib/geminiVoice';
 import { setMicOpen } from '@/lib/voiceFeedback';
-import { startVoiceRecording } from '@/lib/audioInput';
-import type { VoiceRecording } from '@/lib/audioInput';
+import { LANGUAGE_LABELS } from '@/lib/format';
 import { Button } from '@/components/ui/Button';
 import { formatINR } from '@/lib/format';
 
@@ -21,14 +20,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   'audio-capture':
     "We couldn't hear from your microphone. Check that it's plugged in, or type instead.",
   network: 'Voice input needs an internet connection. Check yours, or type instead.',
-  transcribe: 'The AI could not hear this, try again.',
   'no-speech': '',
   aborted: '',
-  speech:
-    "Sorry, I couldn't speak that reply. You can still answer with the mic or type it.",
 };
 
-const LISTEN_START_DELAY_MS = 400;
+const LISTEN_START_DELAY_MS = 150;
 const THINKING_INDICATOR_MS = 1500;
 
 type Mode = 'listening' | 'speaking' | 'thinking' | 'idle' | 'error';
@@ -42,9 +38,9 @@ export function TalkSheet({
   business: Business;
   customers: { name: string }[];
   onClose: () => void;
-  onCompleted: (parsed: ParsedInvoice[], transcript: string) => void;
+  onCompleted: (parsed: ParsedInvoice[], transcript: string, lang: Language) => void;
 }) {
-  const [lang] = useState<Language>(business.language);
+  const [lang, setLang] = useState<Language>(business.language);
   const [draft, setDraft] = useState<ConversationDraft>(emptyDraft());
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [liveText, setLiveText] = useState('');
@@ -56,7 +52,6 @@ export function TalkSheet({
   const [stashed, setStashed] = useState<ConversationDraft[]>([]);
 
   const sessionRef = useRef<ListenSession | null>(null);
-  const recordingRef = useRef<VoiceRecording | null>(null);
   const modeRef = useRef<Mode>('listening');
   const draftRef = useRef(draft);
   const turnsRef = useRef(turns);
@@ -65,8 +60,9 @@ export function TalkSheet({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const closingRef = useRef(false);
   const busyRef = useRef(false);
-  const recordingFallbackRef = useRef(false);
   const handleUtteranceRef = useRef<((text: string) => Promise<void>) | null>(null);
+  const typedRef = useRef('');
+  const typedEditedRef = useRef(false);
 
   draftRef.current = draft;
   turnsRef.current = turns;
@@ -78,8 +74,6 @@ export function TalkSheet({
 
   const stopListening = useCallback(() => {
     setMicOpen(false);
-    recordingRef.current?.cancel();
-    recordingRef.current = null;
     sessionRef.current?.stop();
     sessionRef.current = null;
     setListening(false);
@@ -88,10 +82,14 @@ export function TalkSheet({
   const scheduleRestartRef = useRef<(() => void) | null>(null);
 
   const finishWithTranscript = useCallback((text: string) => {
-    const clean = text.trim();
+    setMicOpen(false);
+    const clean = (typedEditedRef.current ? typedRef.current : text).trim();
     setListening(false);
     setLiveText('');
+    typedRef.current = clean;
+    setTyped(clean);
     if (clean) {
+      typedEditedRef.current = false;
       setTurns((cur) => [...cur, { role: 'user', text: clean }]);
       void handleUtteranceRef.current?.(clean);
     } else {
@@ -101,8 +99,15 @@ export function TalkSheet({
 
   const startBrowserFallback = useCallback(() => {
     if (closingRef.current || busyRef.current) return;
+    setMicOpen(true);
     const session = startListenSession(lang, {
-      onTranscript: (text) => setLiveText(text),
+      onTranscript: (text) => {
+        setLiveText(text);
+        if (!typedEditedRef.current) {
+          typedRef.current = text;
+          setTyped(text);
+        }
+      },
       onStateChange: (state) => setListening(state !== 'stopped'),
       onFinish: (text) => {
         sessionRef.current = null;
@@ -127,49 +132,10 @@ export function TalkSheet({
     if (closingRef.current || busyRef.current) return;
     setError(null);
     setLiveText('');
-
-    // Primary path: record the mic and send the audio to Gemini's audio
-    // understanding (fixes Telugu/Hindi/mixed speech). The browser's built-in
-    // recognition is the fallback when recording or transcription fails.
-    void (async () => {
-      const recording = await startVoiceRecording({
-        onFinish: (blob) => {
-          setMicOpen(false);
-          recordingRef.current = null;
-          setListening(false);
-          setModeBoth('thinking');
-          void (async () => {
-            const result = await transcribeAudio(blob, lang);
-            if (closingRef.current) return;
-            if (result.ok) {
-              finishWithTranscript(result.text);
-            } else {
-              setError(ERROR_MESSAGES.transcribe);
-              setModeBoth('idle');
-              scheduleRestartRef.current?.();
-            }
-          })();
-        },
-        onError: (code) => {
-          setMicOpen(false);
-          recordingRef.current = null;
-          const msg = ERROR_MESSAGES[code];
-          if (msg) setError(msg);
-          startBrowserFallback();
-        },
-      });
-      if (recording) {
-        setMicOpen(true);
-        recordingRef.current = recording;
-        setModeBoth('listening');
-        setListening(true);
-      } else if (!recordingFallbackRef.current) {
-        recordingFallbackRef.current = true;
-        startBrowserFallback();
-      }
-    })();
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    typedEditedRef.current = false;
+    typedRef.current = '';
+    setTyped('');
+    startBrowserFallback();
   }, [lang, startBrowserFallback, finishWithTranscript]);
 
   const scheduleRestart = useCallback(() => {
@@ -192,57 +158,73 @@ export function TalkSheet({
       THINKING_INDICATOR_MS
     );
 
-    const result = await converseTurn(
-      draftRef.current,
+    const priorDraft = draftRef.current;
+    const priorTurns = turnsRef.current;
+    const ruleResult = ruleBasedTurn(
+      priorDraft,
       text,
-      turnsRef.current,
       lang,
       customers.map((c) => c.name)
     );
-
+    setDraft(ruleResult.draft);
+    draftRef.current = ruleResult.draft;
+    const ruleTurns = [...turnsRef.current, { role: 'bolo' as const, text: ruleResult.reply }];
+    setTurns(ruleTurns);
+    turnsRef.current = ruleTurns;
+    setShowThinking(false);
     if (thinkingTimerRef.current) {
       window.clearTimeout(thinkingTimerRef.current);
       thinkingTimerRef.current = null;
     }
-    setShowThinking(false);
-    const prev = draftRef.current;
-    setDraft(result.draft);
-    draftRef.current = result.draft;
 
-    // The user moved on to a new bill while the old one was ready: set the
-    // finished bill aside and keep the conversation going.
-    if (
-      result.ready &&
-      prev.customer &&
-      result.draft.customer !== prev.customer &&
-      result.draft.items.length === 0 &&
-      result.draft.advance === 0
-    ) {
-      setStashed((cur) => [...cur, prev]);
+    // Text-only AI enhancement runs in the background; the usable rule result
+    // is already visible and spoken while the request is pending.
+    const aiController = new AbortController();
+    let aiTimer: number | undefined;
+    const aiTimeout = new Promise<null>((resolve) => {
+      aiTimer = window.setTimeout(() => {
+        aiController.abort();
+        resolve(null);
+      }, 5000);
+    });
+    const aiResultPromise = converseTurn(
+      priorDraft,
+      text,
+      priorTurns,
+      lang,
+      customers.map((c) => c.name),
+      aiController.signal
+    );
+    if (closingRef.current) {
+      aiController.abort();
+      if (aiTimer !== undefined) window.clearTimeout(aiTimer);
+      busyRef.current = false;
+      return;
     }
-
-    const withReply = [...turnsRef.current, { role: 'bolo' as const, text: result.reply }];
-    setTurns(withReply);
-    turnsRef.current = withReply;
-
-    if (closingRef.current) return;
     setModeBoth('speaking');
-    const ok = await speakReply(result.reply, lang);
+    await speakReply(ruleResult.reply, lang);
+    const aiResult = await Promise.race([aiResultPromise, aiTimeout]);
+    if (aiTimer !== undefined) window.clearTimeout(aiTimer);
+    if (aiResult?.source === 'ai' && !closingRef.current) {
+      setDraft(aiResult.draft);
+      draftRef.current = aiResult.draft;
+      const updatedTurns = [...turnsRef.current];
+      const lastBolo = updatedTurns.map((turn) => turn.role).lastIndexOf('bolo');
+      if (lastBolo >= 0) updatedTurns[lastBolo] = { role: 'bolo', text: aiResult.reply };
+      setTurns(updatedTurns);
+      turnsRef.current = updatedTurns;
+    }
     busyRef.current = false;
     if (closingRef.current) return;
 
-    if (ok) {
-      setModeBoth('idle');
-      scheduleRestart();
-    } else {
-      setModeBoth('error');
-      setError(ERROR_MESSAGES.speech);
-    }
+    setModeBoth('idle');
+    scheduleRestart();
   }
 
   handleUtteranceRef.current = handleUtterance;
 
   useEffect(() => {
+    closingRef.current = false;
     const onHide = () => {
       closingRef.current = true;
       stopPlayback();
@@ -304,7 +286,7 @@ export function TalkSheet({
       .filter((t) => t.role === 'user')
       .map((t) => t.text)
       .join('\n');
-    onCompleted(list, transcriptSummary);
+    onCompleted(list, transcriptSummary, lang);
     onClose();
   }
 
@@ -341,6 +323,14 @@ export function TalkSheet({
           >
             <X size={20} />
           </button>
+        </div>
+
+        <div className="flex flex-wrap justify-center gap-2 px-5 py-2 border-b border-line">
+          {(Object.keys(LANGUAGE_LABELS) as Language[]).map((language) => (
+            <button key={language} onClick={() => setLang(language)} className={`shrink-0 min-h-[36px] px-3 rounded-full text-xs font-medium border ${lang === language ? 'bg-primary text-white border-primary' : 'bg-card border-line text-muted'}`}>
+              {LANGUAGE_LABELS[language].label}
+            </button>
+          ))}
         </div>
 
         {/* Live draft card, pinned at the top */}
@@ -408,13 +398,6 @@ export function TalkSheet({
               </div>
             </div>
           )}
-          {liveText && (
-            <div className="flex justify-end bubble-in">
-              <div className="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm bg-primary/40 text-white rounded-br-sm italic">
-                {liveText}
-              </div>
-            </div>
-          )}
           {showThinking && (
             <div className="flex justify-start bubble-in">
               <div className="bg-card border border-line rounded-2xl px-4 py-2.5 flex items-center gap-2">
@@ -454,7 +437,7 @@ export function TalkSheet({
           <div className="flex gap-2">
             <input
               value={typed}
-              onChange={(e) => setTyped(e.target.value)}
+              onChange={(e) => { typedEditedRef.current = true; typedRef.current = e.target.value; setTyped(e.target.value); }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') submitTyped();
               }}
