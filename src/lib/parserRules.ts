@@ -28,6 +28,11 @@ const SMALL: Record<string, number> = {
   ek: 1, do: 2, teen: 3, char: 4, chaar: 4, paanch: 5, panch: 5, chhe: 6,
   che: 6, saat: 7, aath: 8, nau: 9, das: 10, bees: 20, tees: 30, chalis: 40,
   pachaas: 50,
+  एक: 1, दो: 2, तीन: 3, चार: 4, पांच: 5, पाँच: 5, छह: 6, सात: 7, आठ: 8, नौ: 9, दस: 10,
+  ఒకటి: 1, రెండు: 2, మూడు: 3, నాలుగు: 4, ఐదు: 5, ఆరు: 6, ఏడు: 7, ఎనిమిది: 8, తొమ్మిది: 9, పది: 10,
+  okka: 1, oka: 1, rendu: 2, moodu: 3, mūḍu: 3, naalugu: 4, nalugu: 4,
+  aidu: 5, aaru: 6, edu: 7, yedu: 7, enimidi: 8, tommidi: 9, padi: 10,
+  iravai: 20, muppai: 30, nalabhai: 40, yabai: 50,
 };
 
 // Compound spoken numbers like "two hundred", "two fifty" (= 250)
@@ -106,7 +111,9 @@ function titleCase(s: string): string {
 const NOISE_WORDS = new Set([
   'each', 'per', 'at', 'for', 'and', 'then', 'advance', 'paid', 'received',
   'note', 'notes', 'the', 'a', 'an', 'of', 'to', 'up', 'kg', 'litre', 'gram',
-  'total', 'bill', 'invoice', 'only', 'sir', 'please',
+  'total', 'bill', 'invoice', 'only', 'sir', 'please', 'so', 'got', 'get',
+  'bought', 'buy', 'buying', 'me', 'my', 'for', 'customer', 'customername',
+  'kumar',
 ]);
 
 function parseItemSegment(segment: string): ParsedItem | null {
@@ -172,7 +179,7 @@ function parseItemSegment(segment: string): ParsedItem | null {
 // Main rule-based parser
 // ---------------------------------------------------------------------------
 
-export function parseWithRules(text: string, _lang: Language = 'en'): ParsedInvoice {
+export function parseWithRules(text: string, _lang: Language = 'en', knownCustomers: string[] = []): ParsedInvoice {
   const empty: ParsedInvoice = {
     customer: '',
     items: [],
@@ -195,6 +202,17 @@ export function parseWithRules(text: string, _lang: Language = 'en'): ParsedInvo
   if (!clean) return empty;
 
   clean = normalizeSpokenNumbers(clean);
+
+  // Preserve an existing customer spelling and remove it before item parsing.
+  let matchedCustomer = '';
+  for (const name of [...knownCustomers].sort((a, b) => b.length - a.length)) {
+    const escaped = name.trim().replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+    if (escaped && new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, 'iu').test(clean)) {
+      matchedCustomer = name.trim();
+      clean = clean.replace(new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, 'iu'), ' ').trim();
+      break;
+    }
+  }
 
   // Advance: "advance 300", "advance paid 300", "received 300", "paid 300"
   let advance = 0;
@@ -219,7 +237,7 @@ export function parseWithRules(text: string, _lang: Language = 'en'): ParsedInvo
 
   const items: ParsedItem[] = [];
   const unparsed: string[] = [];
-  let customer = '';
+  let customer = matchedCustomer;
 
   for (const seg of segments) {
     if (!seg) continue;
@@ -233,7 +251,7 @@ export function parseWithRules(text: string, _lang: Language = 'en'): ParsedInvo
     if (!customer && !/\d/.test(seg)) {
       customer = titleCase(
         seg
-          .replace(/\b(bill|invoice|for|hi|hello)\b/gi, ' ')
+          .replace(/\b(bill|invoice|for|hi|hello|so|then|got|bought|buy|me|my|customer|name)\b/gi, ' ')
           .replace(/\s+/g, ' ')
           .trim()
       );
