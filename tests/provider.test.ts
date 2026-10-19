@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildProviderChain,
+  buildTextProviderChain,
   callProviderChain,
 } from '../supabase/functions/_shared/providerChain.ts';
 const env: Record<string, string> = {
@@ -98,4 +99,39 @@ test('provider JSON body timeout aborts and tries the next provider', async () =
     globalThis.fetch = original;
     globalThis.setTimeout = originalTimer;
   }
+});
+
+test('explicit Re-read uses compatible directly; normal parsing keeps Gemini first', async () => {
+  const providers = buildTextProviderChain('openai-compatible');
+  assert.deepEqual(buildTextProviderChain().map(p => p.name), ['gemini', 'openai-compatible']);
+  assert.deepEqual(providers.map((p) => p.name), ['openai-compatible']);
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json({choices: [{message: {content: '{"ok":true}'}}]});
+  };
+  try {
+    const r = await callProviderChain(providers, body, x => (x as any)?.ok ? true : null, 'billing');
+    assert.equal(r.providerName, 'openai-compatible');
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = original; }
+});
+test('Qwen3.8 Omni uses text-only JSON mode with thinking disabled', async () => {
+  const original = globalThis.fetch;
+  let request: any;
+  globalThis.fetch = async (_url, opts) => {
+    request = JSON.parse(String(opts?.body));
+    return Response.json({choices: [{message: {content: '{"ok":true}'}}]});
+  };
+  try {
+    const p = {...buildTextProviderChain('openai-compatible')[0], model:'qwen3.8-omni-flash'};
+    const r = await callProviderChain([p], body, x => (x as any)?.ok ? true : null, 'qwen');
+    assert.equal(r.value, true);
+    assert.deepEqual(request.modalities, ['text']);
+    assert.equal(request.reasoning_effort, 'none');
+    assert.equal(request.stream, false);
+    assert.deepEqual(request.response_format, {type:'json_object'});
+    assert.equal(request.responseSchema, undefined);
+  } finally { globalThis.fetch = original; }
 });

@@ -93,3 +93,11 @@ test('reported book sentence separates quantity from unit price without inventin
   assert.equal(p.items[0].quantity, 30);
   assert.equal(p.items[0].unit_price, 500);
 });
+
+test('purchase verb separates customer from unpriced goods in screenshot', () => {
+  const p = parseWithRules('Ravi Kumar bought t-shirts and one sheet is 200 rupees in advance 500 advance advanced');
+  assert.equal(p.customer, 'Ravi Kumar');
+  assert.equal(p.items[0]?.name, 'Sheet');
+  assert.equal(p.items[0]?.unit_price, 200);
+  assert.match(p.notes, /t-shirts/i);
+});

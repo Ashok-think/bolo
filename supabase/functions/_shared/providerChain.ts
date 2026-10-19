@@ -29,6 +29,13 @@ export function buildProviderChain(): ProviderConfig[] {
     });
   return providers;
 }
+// Only an explicit Re-read selects the compatible provider directly.
+// Normal voice parsing and Talk keep Gemini first, then compatible fallback.
+export function buildTextProviderChain(preference?: unknown): ProviderConfig[] {
+  const providers = buildProviderChain();
+  if (preference !== 'openai-compatible') return providers;
+  return providers.filter((p) => p.name === 'openai-compatible');
+}
 export interface ProviderCallResult<T> {
   value: T | null;
   providerName: string | null;
@@ -62,6 +69,13 @@ export async function callProviderChain<T>(
       };
       let request: Record<string, unknown> = { ...body, max_tokens: 1200 };
       delete request.responseSchema;
+      if (provider.name === 'openai-compatible' && /qwen3\.8-omni/i.test(provider.model)) {
+        // Qwen3.8 supports non-streamed JSON mode, but not JSON Schema mode.
+        request.modalities = ['text'];
+        request.reasoning_effort = 'none';
+        request.stream = false;
+      }
+
       if (provider.name === 'gemini') {
         const model = provider.model.replace(/^models\//, '');
         endpoint = `${provider.baseUrl}/models/${encodeURIComponent(model)}:generateContent`;

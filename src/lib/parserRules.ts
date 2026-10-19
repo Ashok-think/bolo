@@ -397,6 +397,17 @@ export function parseWithRules(
     break;
   }
 
+  // A purchase verb separates the buyer's name from goods, even before a
+  // quantity is spoken: "Ravi Kumar bought t-shirts and one sheet ...".
+  if (!matchedCustomer) {
+    const buyer = clean.match(/^(.+?)\s+(?:bought|buys?|purchased|ordered|got)\b\s*/i);
+    const name = buyer ? safeCustomer(buyer[1]) : '';
+    if (buyer && name) {
+      matchedCustomer = name;
+      clean = clean.slice(buyer[0].length).trim();
+    }
+  }
+
   // Advance: "advance 300", "advance paid 300", "received 300", "paid 300"
   let advance = 0;
   const advanceMatch =
