@@ -1,4 +1,4 @@
-export type Language = 'en' | 'hi' | 'te' | 'ta' | 'kn' | 'ml' | 'mr' | 'bn' | 'gu';
+export type Language = 'en' | 'hi' | 'te' | 'ta' | 'kn' | 'ml' | 'mr' | 'bn' | 'gu' | 'ur';
 
 export type InvoiceStatus = 'pending' | 'sent' | 'paid';
 
