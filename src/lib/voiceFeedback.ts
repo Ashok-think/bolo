@@ -11,22 +11,6 @@ export function setMicOpen(open: boolean): void {
   if (open) stopSpeaking();
 }
 
-export function smartVoiceEnabled(): boolean {
-  try {
-    return localStorage.getItem('bolo_smart_voice') === 'on';
-  } catch {
-    return false;
-  }
-}
-
-export function setSmartVoice(on: boolean): void {
-  try {
-    localStorage.setItem('bolo_smart_voice', on ? 'on' : 'off');
-  } catch {
-    // preference is best-effort
-  }
-}
-
 export function speakConfirmationsEnabled(): boolean {
   try {
     return localStorage.getItem(PREF_KEY) !== 'off';
