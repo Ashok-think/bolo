@@ -132,3 +132,29 @@ test('fatal microphone error ends session and cannot restart itself', () => {
   assert.equal(Recognition.all.length, 1);
   assert.deepEqual(c.finishes, ['']);
 });
+
+test('Android growing snapshots at successive indexes do not multiply words', () => {
+  const c = setup();
+  const r = Recognition.all[0];
+  const snapshots = ['Ravi', 'Ravi', 'Ravi bought', 'Ravi bought shirts', 'Ravi bought shirts', 'Ravi bought shirts 200 each', 'Ravi bought shirts 200 each'];
+  r.onresult({ resultIndex: 0, results: snapshots.map(transcript =>
+    Object.assign([{ transcript }], { isFinal: true })) });
+  assert.equal(c.text, 'Ravi bought shirts 200 each');
+  c.session.stop();
+  assert.deepEqual(c.finishes, ['Ravi bought shirts 200 each']);
+});
+
+test('revised shrinking results remove stale interims without deleting spoken repetitions', () => {
+  const c = setup();
+  const r = Recognition.all[0];
+  r.onresult({ resultIndex: 0, results: ['Ravi', 'wrong words'].map(transcript =>
+    Object.assign([{ transcript }], { isFinal: false })) });
+  r.result('Ravi three shirts', true);
+  assert.equal(c.text, 'Ravi three shirts');
+  r.result('Ravi Ravi three shirts', true);
+  assert.equal(c.text, 'Ravi Ravi three shirts');
+  r.onresult({ resultIndex: 0, results: ['one shirt 200', 'one shirt 200'].map(transcript =>
+    Object.assign([{ transcript }], { isFinal: true })) });
+  assert.equal(c.text, 'one shirt 200 one shirt 200');
+  c.session.cancel();
+});

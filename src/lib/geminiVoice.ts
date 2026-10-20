@@ -85,6 +85,7 @@ export async function speakReplyDetailed(
     };
   }
   let blob = cache.get(key);
+  let failure = 'Gemini audio could not be generated.';
   if (!blob) {
     const abort = new AbortController();
     controller = abort;
@@ -92,7 +93,10 @@ export async function speakReplyDetailed(
     try {
       const work = (async () => {
         const token = await getAccessToken();
-        if (!token || abort.signal.aborted) return null;
+        if (!token || abort.signal.aborted) {
+          failure = 'Sign in again to use Gemini voice.';
+          return null;
+        }
         const res = await fetch(
           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/speak-reply`,
           {
@@ -106,8 +110,21 @@ export async function speakReplyDetailed(
             body: JSON.stringify({ text, lang }),
           },
         );
-        if (!res.ok) return null;
         const data = await res.json();
+        if (!res.ok) {
+          const reasons: Record<string, string> = {
+            'tts-timeout': 'Gemini audio generation timed out.',
+            'tts-quota': 'Google audio quota was reached.',
+            'tts-model-unavailable': 'The configured Gemini TTS model is unavailable.',
+            'tts-provider-auth': 'Google denied access to the TTS model. Check key restrictions and model access.',
+            'tts-provider-unavailable': 'The Google audio service rejected the request or is unavailable.',
+            'tts-no-audio': 'Google returned no audio.',
+          };
+          failure = res.status === 429 ? 'The app daily AI limit was reached.'
+            : res.status === 401 ? 'Sign in again to use Gemini voice.'
+            : reasons[data.code] ?? 'Gemini audio could not be generated. Check speak-reply configuration.';
+          return null;
+        }
         return typeof data.pcm === 'string' && data.pcm
           ? pcmToWav(data.pcm, 24000)
           : null;
@@ -116,6 +133,7 @@ export async function speakReplyDetailed(
         work,
         new Promise<null>((resolve) => {
           timer = setTimeout(() => {
+            failure = 'The Gemini voice request timed out.';
             abort.abort();
             resolve(null);
           }, 12000);
@@ -147,9 +165,7 @@ export async function speakReplyDetailed(
   return {
     ok,
     engine: ok ? 'browser' : 'none',
-    reason: ok
-      ? 'Gemini voice is unavailable; device voice played. Check AI in Settings.'
-      : 'Gemini voice is unavailable. Check AI and deployed server functions in Settings.',
+    reason: `${failure} ${ok ? 'Device voice played.' : 'Your reply is shown as text.'}`,
   };
 }
 export async function speakReply(
