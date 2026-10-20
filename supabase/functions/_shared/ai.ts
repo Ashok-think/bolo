@@ -10,7 +10,7 @@ export const json = (status: number, body: unknown) =>
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
-export async function authorizeAI(req: Request, lang = 'en') {
+export async function authorizeAI(req: Request, _lang = 'en') {
   const admin = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -22,18 +22,8 @@ export async function authorizeAI(req: Request, lang = 'en') {
   const { data, error } = await admin.auth.getUser(token);
   if (error || !data.user)
     return { error: json(401, { error: 'Sign in to use AI' }) };
-  const { data: allowed, error: limitError } = await admin.rpc(
-    'reserve_ai_call',
-    { p_user_id: data.user.id, p_lang: lang },
-  );
-  if (limitError)
-    return {
-      error: json(503, {
-        error: 'AI usage check unavailable. Apply the P0 migration.',
-      }),
-    };
-  if (!allowed)
-    return { error: json(429, { error: 'Daily AI limit reached' }) };
+  // No app-imposed daily caps. Provider quotas still apply; authentication
+  // remains mandatory for every AI endpoint.
   return { admin, user: data.user };
 }
 export const itemSchema = {

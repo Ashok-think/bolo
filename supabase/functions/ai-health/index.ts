@@ -1,3 +1,4 @@
+// Rebundle authenticated AI access without app daily caps.
 // Rebundle model-specific thinking: minimal on Flash-Lite; low on Gemini 3.8.
 import { authorizeAI, corsHeaders, json } from '../_shared/ai.ts';
 import {

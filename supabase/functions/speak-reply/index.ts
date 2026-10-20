@@ -1,3 +1,4 @@
+// Rebundle authenticated AI access without app daily caps.
 import { authorizeAI, corsHeaders, json } from '../_shared/ai.ts';
 import { generateVoice } from '../_shared/tts.ts';
 Deno.serve(async (req) => {
