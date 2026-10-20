@@ -13,9 +13,16 @@ export function AuthScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => {
+    const query = new URLSearchParams(window.location.search);
+    const hash = new URLSearchParams(window.location.hash.slice(1));
+    return query.has('error') || hash.has('error')
+      ? 'Google sign-in was not completed. Try again or use email and password.'
+      : null;
+  });
   const [busy, setBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
 
   const friendlyError = (raw: string): string => {
     if (raw.includes('Invalid login credentials')) return 'Wrong email or password. Try again.';
@@ -56,6 +63,29 @@ export function AuthScreen() {
     const { error: demoError } = await signInDemoAccount();
     setDemoBusy(false);
     if (demoError) setError(demoError);
+  }
+
+  async function handleGoogle() {
+    setError(null);
+    // Google blocks OAuth inside Bolt's embedded preview.
+    if (window.self !== window.top) {
+      setError('Open the published app in a new tab to continue with Google.');
+      return;
+    }
+    setGoogleBusy(true);
+    try {
+      const { error: googleError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/` },
+      });
+      if (googleError) {
+        setError('Google sign-in could not start. Please try again or use email and password.');
+      }
+    } catch {
+      setError('Google sign-in could not start. Check your connection and try again.');
+    } finally {
+      setGoogleBusy(false);
+    }
   }
 
   const isSignin = mode === 'signin';
@@ -136,6 +166,23 @@ export function AuthScreen() {
           <span className="text-xs text-muted">or</span>
           <span className="flex-1 h-px bg-line" />
         </div>
+
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full mb-3"
+          loading={googleBusy}
+          disabled={busy || demoBusy}
+          onClick={handleGoogle}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 shrink-0">
+            <path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.39-.18-2.05H12v3.88h5.38a4.6 4.6 0 0 1-2 3.02v2.51h3.24c1.9-1.75 2.98-4.33 2.98-7.36Z" />
+            <path fill="#34A853" d="M12 22c2.7 0 4.96-.9 6.62-2.41l-3.24-2.51c-.9.6-2.05.96-3.38.96-2.6 0-4.8-1.76-5.58-4.12H3.08v2.59A10 10 0 0 0 12 22Z" />
+            <path fill="#FBBC05" d="M6.42 13.92a6 6 0 0 1 0-3.84V7.49H3.08a10 10 0 0 0 0 9.02l3.34-2.59Z" />
+            <path fill="#EA4335" d="M12 5.96c1.47 0 2.79.51 3.82 1.51l2.87-2.87A9.62 9.62 0 0 0 12 2a10 10 0 0 0-8.92 5.49l3.34 2.59A6 6 0 0 1 12 5.96Z" />
+          </svg>
+          Continue with Google
+        </Button>
 
         <Button
           variant="outline"
