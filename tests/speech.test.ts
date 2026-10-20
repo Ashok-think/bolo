@@ -136,7 +136,7 @@ test('fatal microphone error ends session and cannot restart itself', () => {
 test('Android growing snapshots at successive indexes do not multiply words', () => {
   const c = setup();
   const r = Recognition.all[0];
-  const snapshots = ['Ravi', 'Ravi', 'Ravi bought', 'Ravi bought shirts', 'Ravi bought shirts 200 each'];
+  const snapshots = ['Ravi', 'Ravi', 'Ravi bought', 'Ravi bought shirts', 'Ravi bought shirts', 'Ravi bought shirts 200 each', 'Ravi bought shirts 200 each'];
   r.onresult({ resultIndex: 0, results: snapshots.map(transcript =>
     Object.assign([{ transcript }], { isFinal: true })) });
   assert.equal(c.text, 'Ravi bought shirts 200 each');

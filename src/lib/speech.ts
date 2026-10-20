@@ -87,16 +87,19 @@ export function startListenSession(
       .map((i) => finals.get(i) ?? interims.get(i) ?? '')
       .filter(Boolean);
     const chunks: string[] = [];
+    let growingSnapshots = false;
     const normal = (s: string) => s.toLocaleLowerCase().replace(/\s+/g, ' ').trim();
     for (const part of parts) {
       // Some Android engines put growing snapshots at successive result indexes:
       // "Ravi", "Ravi", "Ravi bought", "Ravi bought shirts".
       // Replace that growing prefix rather than billing it multiple times.
       const previous = chunks[chunks.length - 1];
+      if (growingSnapshots && previous && normal(part) === normal(previous)) continue;
       if (previous && normal(part).startsWith(normal(previous) + ' ')) {
+        growingSnapshots = true;
         const prefix = normal(previous);
         do { chunks.pop(); } while (chunks.length && normal(chunks[chunks.length - 1]) === prefix);
-      }
+      } else if (previous && normal(part) !== normal(previous)) growingSnapshots = false;
       chunks.push(part);
     }
     return chunks.join(' ');
