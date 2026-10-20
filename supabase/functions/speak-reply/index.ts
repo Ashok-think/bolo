@@ -22,7 +22,18 @@ Deno.serve(async (req) => {
     } finally {
       clearTimeout(timer);
     }
-  } catch {
-    return json(503, { error: 'Gemini voice unavailable' });
+  } catch (error) {
+    // Only expose a fixed diagnostic code, never provider bodies or secrets.
+    const message = error instanceof Error ? error.message : '';
+    const status = Number(message.match(/HTTP (\d{3})/)?.[1]);
+    const code = error instanceof Error && error.name === 'AbortError'
+      ? 'tts-timeout'
+      : message === 'Gemini voice quota reached' ? 'tts-quota'
+      : status === 404 ? 'tts-model-unavailable'
+      : status === 401 || status === 403 ? 'tts-provider-auth'
+      : status ? 'tts-provider-unavailable'
+      : message === 'No audio returned' ? 'tts-no-audio'
+      : 'tts-unavailable';
+    return json(503, { error: 'Gemini voice unavailable', code });
   }
 });

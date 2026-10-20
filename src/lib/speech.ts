@@ -83,10 +83,23 @@ export function startListenSession(
     const keys = [...new Set([...finals.keys(), ...interims.keys()])].sort(
       (a, b) => a - b,
     );
-    return keys
+    const parts = keys
       .map((i) => finals.get(i) ?? interims.get(i) ?? '')
-      .filter(Boolean)
-      .join(' ');
+      .filter(Boolean);
+    const chunks: string[] = [];
+    const normal = (s: string) => s.toLocaleLowerCase().replace(/\s+/g, ' ').trim();
+    for (const part of parts) {
+      // Some Android engines put growing snapshots at successive result indexes:
+      // "Ravi", "Ravi", "Ravi bought", "Ravi bought shirts".
+      // Replace that growing prefix rather than billing it multiple times.
+      const previous = chunks[chunks.length - 1];
+      if (previous && normal(part).startsWith(normal(previous) + ' ')) {
+        const prefix = normal(previous);
+        do { chunks.pop(); } while (chunks.length && normal(chunks[chunks.length - 1]) === prefix);
+      }
+      chunks.push(part);
+    }
+    return chunks.join(' ');
   };
   const composeText = () =>
     [committed, composeSegment()]
@@ -153,7 +166,11 @@ export function startListenSession(
     };
     rec.onresult = (event) => {
       if (!active || recognition !== rec) return;
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      // results is the complete current snapshot. Rebuild so a shrinking or
+      // revised interim list cannot leave stale words at old indexes.
+      finals.clear();
+      interims.clear();
+      for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
         const wordText = result[0]?.transcript?.trim() ?? '';
         if (result.isFinal) {
