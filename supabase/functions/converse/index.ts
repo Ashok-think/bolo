@@ -11,6 +11,7 @@ import {
   buildProviderChain,
   callProviderChain,
 } from '../_shared/providerChain.ts';
+import { requestsPhone } from '../_shared/conversationPolicy.ts';
 const schema = {
   type: 'OBJECT',
   properties: {
@@ -25,7 +26,7 @@ const schema = {
   },
   required: ['draft', 'reply', 'missing', 'ready'],
 };
-const prompt = `You are Bolo, a warm billing assistant. Understand native, romanized and mixed Indian-language text. Merge the new utterance once into the previous draft. Never duplicate items or advance already in the draft. Apply corrections rather than append copies. Never invent missing facts. In 'Ravi Kumar bought t-shirts', customer is Ravi Kumar and t-shirts is an item, not a surname. Ask for a missing quantity or price rather than guessing. Customer names contain at most 4 words; filler 'so', 'got', 'ki' is not a name. A book costs 500 and 30 bought means quantity 30, unit_price 500. Return {draft:{customer,phone,items:[{name,quantity,unit_price}],advance,notes},reply,missing,ready}. Reply in ONE short friendly sentence in the user's spoken language, asking only ONE genuinely missing thing. Check the history; never repeat an answered question. If complete, ask 'Anything else, or shall I create it?'. If they say yes/create it/done/bas/ho gaya/అయిపోయింది, keep the completed draft, set ready=true and read back customer,total,advance,balance. Do not claim that an invoice was saved; the user must confirm Review. Keep item and customer names as spoken.`;
+const prompt = `You are Bolo, a warm billing assistant. Understand native, romanized and mixed Indian-language text. Merge the new utterance once into the previous draft. Never duplicate items or advance already in the draft. Apply corrections rather than append copies. Never invent missing facts. In 'Ravi Kumar bought t-shirts', customer is Ravi Kumar and t-shirts is an item, not a surname. Ask for a missing quantity or price rather than guessing. Customer names contain at most 4 words; filler 'so', 'got', 'ki' is not a name. A book costs 500 and 30 bought means quantity 30, unit_price 500. Return {draft:{customer,phone,items:[{name,quantity,unit_price}],advance,notes},reply,missing,ready}. Reply in ONE short friendly sentence in the user's spoken language, asking only ONE genuinely missing thing. Check the history; never repeat an answered question. If complete, ask 'Anything else, or shall I create it?'. If they say yes/create it/done/bas/ho gaya/అయిపోయింది, keep the completed draft, set ready=true and read back customer,total,advance,balance. Do not claim that an invoice was saved; the user must confirm Review. Keep item and customer names as spoken. Phone, mobile, WhatsApp and contact details are optional. Never ask for any phone or contact number in any language, never include phone in missing, and never block ready on phone. Keep phone empty unless the user volunteers it.`;
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS')
     return new Response(null, { headers: corsHeaders });
@@ -80,6 +81,9 @@ Deno.serve(async (req) => {
         const result = validateInvoice(x.draft);
         if (!result || typeof x.reply !== 'string' || !x.reply.trim())
           return null;
+        // If a model ignores the no-phone instruction, try the fallback
+        // provider or the client's existing rule-based billing questions.
+        if (requestsPhone(x.reply, x.missing)) return null;
         return {
           draft: {
             ...result,
