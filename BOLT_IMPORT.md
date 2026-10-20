@@ -32,7 +32,7 @@ Do not import a ZIP or create a new Bolt project. Keep https://bolt.new/~/sb1-sn
 - Talk to Bolo shows a usable rule draft immediately, then uses the AI's actual reply when available. A new mic tap can interrupt AI/playback rather than leave the controls stuck on Paused. Reply voice and listening never run together.
 - Invoice saving remains one transactional RPC, with a synchronous double-submit guard and a reusable request ID. The migration locks business numbering and verifies customer ownership and item values.
 - Payment QR uses `qrcode`, 480px PNG generation, a 240px white frame, skeleton/error states, Copy UPI link and Pay with UPI. Paid/missing-UPI states are explicit. WhatsApp links use the actual Bolt site's `/i/:token` route.
-- Normal parsing and Talk use Gemini first, then the compatible API. An explicit Review Re-read selects the compatible API directly within the same five-second deadline. AI parsing uses Gemini's native generateContent API with a JSON schema and low/disabled thinking where supported; fallback runs inside the shared four-second provider budget. The client still stops waiting at five seconds. Limits reserve attempts atomically: 40 per user/day, 1,000 globally/day, shared by AI operations (including voice tests). Failed attempts count toward the limit.
+- Normal parsing and Talk use Gemini first, then the compatible API. An explicit Review Re-read selects the compatible API directly within the same five-second deadline. AI parsing uses Gemini's native generateContent API with a JSON schema and low/disabled thinking where supported; fallback runs inside the shared four-second provider budget. The client still stops waiting at five seconds. App daily caps have been removed at the owner's request. AI endpoints still require an authenticated user, but do not call reserve_ai_call or consume the old app allowance. External provider quotas still apply. The historical SQL quota function and usage records are preserved and unused.
 
 ## Validation and remaining gates
 
@@ -59,3 +59,7 @@ New keys may not have access to legacy 2.5 models. Set GEMINI_MODEL=gemini-3.8-f
 ## Verified live configuration
 
 Current working text model: GEMINI_MODEL=gemini-3.5-flash-lite (Check AI green for both providers). The helper uses minimal thinking only for documented models that support it, and low for Gemini 3.8. Current working voice: GEMINI_TTS_MODEL=gemini-3.1-flash-tts-preview (Test voice reported Gemini voice played). The 3.8 speech adapter remains available, but its live generation was unavailable with this account during testing. The legacy preview has a published November 17, 2026 shutdown date; recheck/migrate before then. Do not replace working secrets with defaults without testing.
+
+## Remove app daily caps (2026-10-20)
+
+Deploy parse-invoice, converse, speak-reply and ai-health with the updated shared ai.ts. No SQL migration or usage reset is required: authorizeAI authenticates but no longer calls reserve_ai_call. Historical migrations stay intact. This applies immediately to existing usage after server deployment; publishing is needed only for the clearer AI Re-read button label. Provider quotas are unaffected.

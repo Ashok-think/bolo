@@ -336,7 +336,7 @@ export function ReviewScreen({
                 size={14}
                 className={reParsing ? 'animate-spin' : ''}
               />
-              Re-read
+              AI Re-read
             </button>
           </div>
           <textarea
@@ -352,7 +352,7 @@ export function ReviewScreen({
         <Card className="p-4 mb-4 bg-amber/10 border-amber/40">
           <p className="text-sm text-ink">
             We couldn't fully understand that. Fill in the details below or edit
-            what you said and tap Re-read.
+            what you said and tap AI Re-read.
           </p>
         </Card>
       )}
